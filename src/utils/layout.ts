@@ -12,6 +12,7 @@ import type {
   PageLayoutInfo,
   PatternTransform,
   NailSize,
+  NailShape,
   LayoutConflictType
 } from '../types'
 import { A4_WIDTH_MM, A4_HEIGHT_MM, getNailDimensions } from '../data/nailConfig'
@@ -575,25 +576,52 @@ export function calculateMaterialEstimate(
 export function applyConflictSuggestion(
   settings: LayoutSettings,
   calibration: PrintCalibration,
+  patternConfigs: Record<string, PatternIndependentConfig>,
   suggestion: LayoutConflictSuggestion
-): { settings: LayoutSettings; calibration: PrintCalibration } {
+): {
+  settings: LayoutSettings
+  calibration: PrintCalibration
+  patternConfigs: Record<string, PatternIndependentConfig>
+} {
   if (suggestion.settingKey === 'calibration') {
     return {
       settings,
-      calibration: { ...calibration, enabled: Boolean(suggestion.recommendedValue) }
+      calibration: { ...calibration, enabled: Boolean(suggestion.recommendedValue) },
+      patternConfigs
     }
   }
   const key = suggestion.settingKey as keyof LayoutSettings
   if (key === 'nailSize') {
     const sizes: NailSize[] = ['XS', 'S', 'M', 'L']
     const idx = Math.max(0, Math.min(3, Number(suggestion.recommendedValue) || 0))
+    const newSize = sizes[idx]
+    const newConfigs: Record<string, PatternIndependentConfig> = {}
+    for (const [pid, cfg] of Object.entries(patternConfigs)) {
+      newConfigs[pid] = { ...cfg, nailSize: newSize }
+    }
     return {
-      settings: { ...settings, nailSize: sizes[idx] },
-      calibration
+      settings: { ...settings, nailSize: newSize },
+      calibration,
+      patternConfigs: newConfigs
+    }
+  }
+  if (key === 'nailShape') {
+    const shapes: NailShape[] = ['square', 'round', 'oval', 'almond', 'stiletto', 'coffin']
+    const idx = Math.max(0, Math.min(5, Number(suggestion.recommendedValue) || 0))
+    const newShape = shapes[idx]
+    const newConfigs: Record<string, PatternIndependentConfig> = {}
+    for (const [pid, cfg] of Object.entries(patternConfigs)) {
+      newConfigs[pid] = { ...cfg, nailShape: newShape }
+    }
+    return {
+      settings: { ...settings, nailShape: newShape },
+      calibration,
+      patternConfigs: newConfigs
     }
   }
   return {
     settings: { ...settings, [key]: suggestion.recommendedValue },
-    calibration
+    calibration,
+    patternConfigs
   }
 }

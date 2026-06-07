@@ -219,10 +219,12 @@ function handleApplyConflictSuggestion(suggestion: LayoutConflictSuggestion) {
   const result = applyConflictSuggestion(
     layoutSettings.value,
     calibration.value,
+    patternConfigs.value,
     suggestion
   )
   layoutSettings.value = result.settings
   calibration.value = result.calibration
+  patternConfigs.value = result.patternConfigs
 }
 
 function handleUpdateNailSize(size: NailSize) {

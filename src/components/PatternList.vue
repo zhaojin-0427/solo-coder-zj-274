@@ -178,25 +178,30 @@ function getGroup(id: string | null): SetGroup | undefined {
       </div>
     </div>
 
-    <div v-if="setGroups.length > 0" class="mb-3 flex flex-wrap gap-1">
-      <span class="text-[10px] text-gray-500 w-full mb-1">套图分组：</span>
-      <div
-        v-for="g in setGroups"
-        :key="g.id"
-        class="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded"
-        :style="{ backgroundColor: g.color + '20', color: g.color }"
-      >
-        <span class="w-2 h-2 rounded-full" :style="{ backgroundColor: g.color }"></span>
-        <span>{{ g.name }}</span>
-        <button
-          class="hover:bg-black/10 rounded px-0.5"
-          @click="emit('deleteSetGroup', g.id)"
-          title="删除分组"
-        >×</button>
-      </div>
+    <div v-if="patterns.length > 0" class="mb-3 flex flex-wrap gap-1 items-center">
+      <span class="text-[10px] text-gray-500 mr-1">套图分组：</span>
+      <template v-if="setGroups.length > 0">
+        <div
+          v-for="g in setGroups"
+          :key="g.id"
+          class="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded"
+          :style="{ backgroundColor: g.color + '20', color: g.color }"
+        >
+          <span class="w-2 h-2 rounded-full" :style="{ backgroundColor: g.color }"></span>
+          <span>{{ g.name }}</span>
+          <button
+            class="hover:bg-black/10 rounded px-0.5"
+            @click="emit('deleteSetGroup', g.id)"
+            title="删除分组"
+          >×</button>
+        </div>
+      </template>
+      <template v-else>
+        <span class="text-[10px] text-gray-400 mr-1">暂无分组</span>
+      </template>
       <button
         v-if="!showNewSetGroup"
-        class="text-[10px] text-gray-500 hover:text-primary-600"
+        class="text-[10px] text-primary-600 hover:text-primary-700 font-medium"
         @click="showNewSetGroup = true"
       >+ 新建分组</button>
       <div v-else class="flex gap-1">
