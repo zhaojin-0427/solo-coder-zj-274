@@ -1,8 +1,38 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
-import type { UploadedPattern, NailSize, NailShape, LayoutSettings, PlacedPattern, MaterialEstimate, PatternTransform } from './types'
-import { calculateLayout, calculateMaterialEstimate } from './utils/layout'
-import { exportToPDF } from './utils/pdf'
+import { ref, computed, watch, nextTick, reactive } from 'vue'
+import type {
+  UploadedPattern,
+  NailSize,
+  NailShape,
+  LayoutSettings,
+  PlacedPattern,
+  MaterialEstimate,
+  PatternTransform,
+  PrintCalibration,
+  PatternIndependentConfig,
+  SetGroup,
+  LayoutResult,
+  LayoutConflict,
+  PageLayoutInfo,
+  LayoutConflictSuggestion,
+  LayoutScheme
+} from './types'
+import {
+  calculateLayout,
+  calculateMaterialEstimate,
+  applyConflictSuggestion
+} from './utils/layout'
+import { exportToPDF, exportCalibrationRulerPDF } from './utils/pdf'
+import { DEFAULT_CALIBRATION, updateCalibrationFromMeasurements } from './utils/calibration'
+import {
+  ensurePatternConfigs,
+  updatePatternConfig,
+  createSetGroup,
+  assignPatternsToSetGroup,
+  createDefaultPatternConfig,
+  updateConfigShape,
+  updateConfigSize
+} from './utils/patternConfig'
 import PatternUploader from './components/PatternUploader.vue'
 import PatternList from './components/PatternList.vue'
 import NailSelector from './components/NailSelector.vue'
@@ -11,8 +41,12 @@ import PatternEditor from './components/PatternEditor.vue'
 import MaterialEstimatePanel from './components/MaterialEstimate.vue'
 import SchemeManager from './components/SchemeManager.vue'
 import PrintCanvas from './components/PrintCanvas.vue'
+import CalibrationPanel from './components/CalibrationPanel.vue'
+import LayoutConflictPanel from './components/LayoutConflictPanel.vue'
 
 const patterns = ref<UploadedPattern[]>([])
+const patternConfigs = ref<Record<string, PatternIndependentConfig>>({})
+const setGroups = ref<SetGroup[]>([])
 const selectedPlacementIndex = ref<number | null>(null)
 const previewMode = ref(false)
 const isExporting = ref(false)
@@ -26,30 +60,61 @@ const layoutSettings = ref<LayoutSettings>({
   copiesPerNail: 5
 })
 
-const pageRefs = ref<Map<number, HTMLElement>>(new Map())
+const calibration = ref<PrintCalibration>({ ...DEFAULT_CALIBRATION })
 
-const placements = ref<PlacedPattern[]>([])
+const pageRefs = ref<Map<number, HTMLElement>>(new Map())
+const layoutResult = ref<LayoutResult>({ placements: [], conflicts: [], pageInfo: [] })
 
 watch(
-  [patterns, layoutSettings],
+  [patterns, layoutSettings, calibration],
   () => {
-    const newPlacements = calculateLayout(patterns.value, layoutSettings.value)
-    if (placements.value.length > 0 && newPlacements.length > 0) {
-      const minLen = Math.min(placements.value.length, newPlacements.length)
-      for (let i = 0; i < minLen; i++) {
-        newPlacements[i].transform = { ...placements.value[i].transform }
-      }
+    patternConfigs.value = ensurePatternConfigs(
+      patterns.value,
+      patternConfigs.value,
+      layoutSettings.value
+    )
+  },
+  { immediate: true, deep: true }
+)
+
+watch(
+  [patterns, patternConfigs, layoutSettings, calibration],
+  () => {
+    const preserved = new Map<string, PatternTransform>()
+    for (const pl of layoutResult.value.placements) {
+      const key = `${pl.patternId}-${pl.configIndex}`
+      preserved.set(key, pl.transform)
     }
-    placements.value = newPlacements
-    if (selectedPlacementIndex.value !== null && selectedPlacementIndex.value >= placements.value.length) {
+    const result = calculateLayout(
+      patterns.value,
+      patternConfigs.value,
+      layoutSettings.value,
+      calibration.value,
+      preserved
+    )
+    layoutResult.value = result
+    if (
+      selectedPlacementIndex.value !== null &&
+      selectedPlacementIndex.value >= result.placements.length
+    ) {
       selectedPlacementIndex.value = null
     }
   },
   { deep: true, immediate: true }
 )
 
+const placements = computed<PlacedPattern[]>(() => layoutResult.value.placements)
+const layoutConflicts = computed<LayoutConflict[]>(() => layoutResult.value.conflicts)
+const pageInfo = computed<PageLayoutInfo[]>(() => layoutResult.value.pageInfo)
+
 const estimate = computed<MaterialEstimate>(() => {
-  return calculateMaterialEstimate(patterns.value, placements.value, layoutSettings.value)
+  return calculateMaterialEstimate(
+    patterns.value,
+    placements.value,
+    patternConfigs.value,
+    layoutSettings.value,
+    calibration.value
+  )
 })
 
 const selectedTransform = computed<PatternTransform>(() => {
@@ -65,10 +130,18 @@ function handlePatternUpload(newPatterns: UploadedPattern[]) {
 
 function handlePatternRemove(id: string) {
   patterns.value = patterns.value.filter(p => p.id !== id)
+  const next: Record<string, PatternIndependentConfig> = {}
+  for (const [pid, cfg] of Object.entries(patternConfigs.value)) {
+    if (pid !== id) next[pid] = cfg
+  }
+  patternConfigs.value = next
+  selectedPlacementIndex.value = null
 }
 
 function handleClearPatterns() {
   patterns.value = []
+  patternConfigs.value = {}
+  setGroups.value = []
   selectedPlacementIndex.value = null
 }
 
@@ -114,9 +187,60 @@ function resetTransform() {
   }
 }
 
-function handleLoadScheme(loadedPatterns: UploadedPattern[], settings: LayoutSettings) {
-  patterns.value = loadedPatterns
-  layoutSettings.value = settings
+function handlePatternConfigUpdate(
+  patternId: string,
+  patch: Partial<PatternIndependentConfig>
+) {
+  patternConfigs.value = updatePatternConfig(patternConfigs.value, patternId, patch)
+}
+
+function handleCreateSetGroup(name: string) {
+  setGroups.value = [...setGroups.value, createSetGroup(name)]
+}
+
+function handleAssignSetGroup(patternIds: string[], groupId: string | null) {
+  patternConfigs.value = assignPatternsToSetGroup(patternConfigs.value, patternIds, groupId)
+}
+
+function handleDeleteSetGroup(groupId: string) {
+  setGroups.value = setGroups.value.filter(g => g.id !== groupId)
+  const next: Record<string, PatternIndependentConfig> = {}
+  for (const [pid, cfg] of Object.entries(patternConfigs.value)) {
+    next[pid] = cfg.setGroupId === groupId ? { ...cfg, setGroupId: null } : cfg
+  }
+  patternConfigs.value = next
+}
+
+function handleCalibrationUpdate(next: PrintCalibration) {
+  calibration.value = next
+}
+
+function handleApplyConflictSuggestion(suggestion: LayoutConflictSuggestion) {
+  const result = applyConflictSuggestion(
+    layoutSettings.value,
+    calibration.value,
+    suggestion
+  )
+  layoutSettings.value = result.settings
+  calibration.value = result.calibration
+}
+
+function handleUpdateNailSize(size: NailSize) {
+  layoutSettings.value.nailSize = size
+  patternConfigs.value = updateConfigSize(patternConfigs.value, size)
+}
+
+function handleUpdateNailShape(shape: NailShape) {
+  layoutSettings.value.nailShape = shape
+  patternConfigs.value = updateConfigShape(patternConfigs.value, shape)
+}
+
+function handleLoadScheme(scheme: LayoutScheme) {
+  patterns.value = scheme.patterns
+  patternConfigs.value = scheme.patternConfigs || {}
+  setGroups.value = scheme.setGroups || []
+  layoutSettings.value = scheme.settings
+  calibration.value = scheme.calibration || { ...DEFAULT_CALIBRATION }
 }
 
 async function handleExportPDF() {
@@ -127,12 +251,21 @@ async function handleExportPDF() {
   isExporting.value = true
   try {
     await nextTick()
-    await exportToPDF(pageRefs.value)
+    await exportToPDF(pageRefs.value, calibration.value)
   } catch (e) {
     console.error('导出PDF失败:', e)
     alert('导出PDF失败，请重试')
   } finally {
     isExporting.value = false
+  }
+}
+
+async function handleExportCalibrationRuler() {
+  try {
+    await exportCalibrationRulerPDF()
+  } catch (e) {
+    console.error('导出校准尺失败:', e)
+    alert('导出校准尺失败，请重试')
   }
 }
 
@@ -152,11 +285,21 @@ function handlePrint() {
         </div>
         <div>
           <h1 class="text-lg font-bold text-gray-800">美甲贴纸排版预览器</h1>
-          <p class="text-xs text-gray-500">智能排版 · 高效打印 · 节约耗材</p>
+          <p class="text-xs text-gray-500">智能排版 · 校准打印 · 批量套图 · 节约耗材</p>
         </div>
       </div>
 
       <div class="flex items-center gap-3">
+        <button
+          class="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          title="打印校准尺"
+          @click="handleExportCalibrationRuler"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+          </svg>
+          打印校准尺
+        </button>
         <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
             type="checkbox"
@@ -196,18 +339,30 @@ function handlePrint() {
         <PatternUploader @upload="handlePatternUpload" />
         <PatternList
           :patterns="patterns"
+          :pattern-configs="patternConfigs"
+          :set-groups="setGroups"
+          :default-config="createDefaultPatternConfig(layoutSettings)"
           @remove="handlePatternRemove"
           @clear="handleClearPatterns"
+          @update-config="handlePatternConfigUpdate"
+          @create-set-group="handleCreateSetGroup"
+          @assign-set-group="handleAssignSetGroup"
+          @delete-set-group="handleDeleteSetGroup"
         />
         <NailSelector
           :selected-size="layoutSettings.nailSize"
           :selected-shape="layoutSettings.nailShape"
-          @update:selected-size="(s: NailSize) => layoutSettings.nailSize = s"
-          @update:selected-shape="(s: NailShape) => layoutSettings.nailShape = s"
+          @update:selected-size="handleUpdateNailSize"
+          @update:selected-shape="handleUpdateNailShape"
         />
         <LayoutSettingsPanel
           :settings="layoutSettings"
           @update:settings="(s: LayoutSettings) => layoutSettings = s"
+        />
+        <CalibrationPanel
+          :calibration="calibration"
+          @update="handleCalibrationUpdate"
+          @export-ruler="handleExportCalibrationRuler"
         />
         <PatternEditor
           :transform="selectedTransform"
@@ -219,9 +374,16 @@ function handlePrint() {
           @reset="resetTransform"
         />
         <MaterialEstimatePanel :estimate="estimate" />
+        <LayoutConflictPanel
+          :conflicts="layoutConflicts"
+          @apply-suggestion="handleApplyConflictSuggestion"
+        />
         <SchemeManager
           :current-patterns="patterns"
+          :current-pattern-configs="patternConfigs"
+          :current-set-groups="setGroups"
           :current-settings="layoutSettings"
+          :current-calibration="calibration"
           @load="handleLoadScheme"
         />
       </aside>
@@ -230,9 +392,12 @@ function handlePrint() {
         <PrintCanvas
           :placements="placements"
           :patterns="patterns"
+          :pattern-configs="patternConfigs"
+          :set-groups="setGroups"
           :selected-placement-index="selectedPlacementIndex"
-          :shape="layoutSettings.nailShape"
+          :page-info="pageInfo"
           :preview-mode="previewMode"
+          :calibration="calibration"
           @select="handlePlacementSelect"
           @page-refs-ready="handlePageRefsReady"
         />

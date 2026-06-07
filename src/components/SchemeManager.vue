@@ -1,15 +1,25 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import type { LayoutScheme, LayoutSettings, UploadedPattern } from '../types'
+import type {
+  LayoutScheme,
+  LayoutSettings,
+  UploadedPattern,
+  PatternIndependentConfig,
+  SetGroup,
+  PrintCalibration
+} from '../types'
 import { getAllSchemes, saveLayoutScheme, deleteScheme, loadScheme } from '../utils/storage'
 
 const props = defineProps<{
   currentPatterns: UploadedPattern[]
+  currentPatternConfigs: Record<string, PatternIndependentConfig>
+  currentSetGroups: SetGroup[]
   currentSettings: LayoutSettings
+  currentCalibration: PrintCalibration
 }>()
 
 const emit = defineEmits<{
-  (e: 'load', patterns: UploadedPattern[], settings: LayoutSettings): void
+  (e: 'load', scheme: LayoutScheme): void
 }>()
 
 const schemes = ref<LayoutScheme[]>([])
@@ -26,7 +36,14 @@ function refreshSchemes() {
 
 function handleSave() {
   if (!newSchemeName.value.trim()) return
-  saveLayoutScheme(newSchemeName.value.trim(), props.currentPatterns, props.currentSettings)
+  saveLayoutScheme(
+    newSchemeName.value.trim(),
+    props.currentPatterns,
+    props.currentPatternConfigs,
+    props.currentSetGroups,
+    props.currentSettings,
+    props.currentCalibration
+  )
   newSchemeName.value = ''
   showSaveInput.value = false
   refreshSchemes()
@@ -35,7 +52,7 @@ function handleSave() {
 function handleLoad(id: string) {
   const scheme = loadScheme(id)
   if (scheme) {
-    emit('load', scheme.patterns, scheme.settings)
+    emit('load', scheme)
   }
 }
 
@@ -97,7 +114,14 @@ function formatDate(timestamp: number) {
         <div class="flex-1 min-w-0">
           <p class="text-xs font-medium text-gray-800 truncate">{{ scheme.name }}</p>
           <p class="text-[10px] text-gray-500">
-            {{ scheme.patterns.length }} 图案 · {{ formatDate(scheme.createdAt) }}
+            {{ scheme.patterns.length }} 图案
+            <template v-if="scheme.setGroups && scheme.setGroups.length > 0">
+              · {{ scheme.setGroups.length }} 套图
+            </template>
+            <template v-if="scheme.calibration && scheme.calibration.enabled">
+              · 已校准
+            </template>
+            · {{ formatDate(scheme.createdAt) }}
           </p>
         </div>
         <div class="flex gap-1 opacity-60 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
