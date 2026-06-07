@@ -100,7 +100,7 @@ function formatDate(timestamp: number) {
             {{ scheme.patterns.length }} 图案 · {{ formatDate(scheme.createdAt) }}
           </p>
         </div>
-        <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div class="flex gap-1 opacity-60 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <button
             class="p-1 text-primary-600 hover:bg-primary-100 rounded"
             title="加载"

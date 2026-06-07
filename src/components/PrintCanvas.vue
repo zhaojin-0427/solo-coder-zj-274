@@ -44,9 +44,9 @@ watch(
   { immediate: true }
 )
 
-function setPageRef(pageIdx: number, el: Element | null) {
-  if (el) {
-    pageRefs.value.set(pageIdx, el as HTMLElement)
+function setPageRef(pageIdx: number, el: unknown) {
+  if (el && el instanceof HTMLElement) {
+    pageRefs.value.set(pageIdx, el)
   } else {
     pageRefs.value.delete(pageIdx)
   }

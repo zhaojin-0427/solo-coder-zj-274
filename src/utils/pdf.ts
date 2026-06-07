@@ -1,5 +1,5 @@
 import jsPDF from 'jspdf'
-import type { PlacedPattern, UploadedPattern } from '../types'
+import html2canvas from 'html2canvas'
 import { A4_WIDTH_MM, A4_HEIGHT_MM } from '../data/nailConfig'
 
 export async function exportToPDF(
