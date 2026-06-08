@@ -1,58 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, reactive } from 'vue'
-import type {
-  UploadedPattern,
-  NailSize,
-  NailShape,
-  LayoutSettings,
-  PlacedPattern,
-  MaterialEstimate,
-  PatternTransform,
-  PrintCalibration,
-  PatternIndependentConfig,
-  SetGroup,
-  LayoutResult,
-  LayoutConflict,
-  PageLayoutInfo,
-  LayoutConflictSuggestion,
-  LayoutScheme,
-  CustomerOrder,
-  OrderLayoutResult,
-  OrderLayoutProgress,
-  PageBatchInfo,
-  DeliveryWarning,
-  PlacedPatternWithOrder,
-  ProductionBatch
-} from './types'
-import {
-  calculateLayout,
-  calculateOrderLayout,
-  calculateMaterialEstimate,
-  applyConflictSuggestion
-} from './utils/layout'
-import { exportToPDF, exportToPDFWithOrderList, exportCalibrationRulerPDF } from './utils/pdf'
-import { DEFAULT_CALIBRATION, updateCalibrationFromMeasurements } from './utils/calibration'
-import {
-  ensurePatternConfigs,
-  updatePatternConfig,
-  createSetGroup,
-  assignPatternsToSetGroup,
-  createDefaultPatternConfig,
-  updateConfigShape,
-  updateConfigSize
-} from './utils/patternConfig'
-import {
-  getAllOrders,
-  getAllBatches,
-  saveBatch,
-  boostOrderPriority,
-  getOrderStatusLabel
-} from './utils/order'
-import type {
-  QCInspectionSession,
-  QCBatchStats,
-  ReworkBatch
-} from './types'
+import { computed } from 'vue'
+import type { LayoutMode } from './types/unified'
+import { useLayoutState } from './composables/useLayoutState'
+import { useOrderBatchState } from './composables/useOrderBatchState'
+import { useQualityControlState } from './composables/useQualityControlState'
+import { useExportActions } from './composables/useExportActions'
+import type { ReworkBatch, PageLayoutInfo, PlacedPattern } from './types'
 import QualityControlPanel from './components/QualityControlPanel.vue'
 import PatternUploader from './components/PatternUploader.vue'
 import PatternList from './components/PatternList.vue'
@@ -68,468 +21,131 @@ import OrderManager from './components/OrderManager.vue'
 import BatchManager from './components/BatchManager.vue'
 import OrderSidebar from './components/OrderSidebar.vue'
 
-type AppMode = 'normal' | 'order'
-const appMode = ref<AppMode>('normal')
-const showOrderTags = ref(true)
-const currentBatchName = ref('')
-
-const qcMode = ref(false)
-const qcSession = ref<QCInspectionSession | null>(null)
-const qcStats = ref<QCBatchStats | null>(null)
-
-const patterns = ref<UploadedPattern[]>([])
-const patternConfigs = ref<Record<string, PatternIndependentConfig>>({})
-const setGroups = ref<SetGroup[]>([])
-const selectedPlacementIndex = ref<number | null>(null)
-const previewMode = ref(false)
-const isExporting = ref(false)
-
-const layoutSettings = ref<LayoutSettings>({
-  nailSize: 'M',
-  nailShape: 'square',
-  gapX: 2,
-  gapY: 2,
-  margin: 10,
-  copiesPerNail: 5
-})
-
-const calibration = ref<PrintCalibration>({ ...DEFAULT_CALIBRATION })
-
-const orders = ref<CustomerOrder[]>(getAllOrders())
-const selectedOrderIds = ref<string[]>([])
-const currentPage = ref(0)
-
-const pageRefs = ref<Map<number, HTMLElement>>(new Map())
-const layoutResult = ref<LayoutResult>({ placements: [], conflicts: [], pageInfo: [] })
-const orderLayoutResult = ref<OrderLayoutResult>({
-  placements: [],
-  conflicts: [],
-  pageInfo: [],
-  orderProgress: {},
-  batchPageInfo: [],
-  deliveryWarnings: []
-})
-
-watch(
-  [patterns, layoutSettings, calibration],
-  () => {
-    patternConfigs.value = ensurePatternConfigs(
-      patterns.value,
-      patternConfigs.value,
-      layoutSettings.value
-    )
-  },
-  { immediate: true, deep: true }
+const layout = useLayoutState(
+  () => orderBatch.orders.value,
+  () => orderBatch.selectedOrderIds.value
 )
 
-watch(
-  [patterns, patternConfigs, layoutSettings, calibration, () => appMode.value],
-  () => {
-    if (appMode.value === 'normal') {
-      const preserved = new Map<string, PatternTransform>()
-      for (const pl of layoutResult.value.placements) {
-        const key = `${pl.patternId}-${pl.configIndex}`
-        preserved.set(key, pl.transform)
-      }
-      const result = calculateLayout(
-        patterns.value,
-        patternConfigs.value,
-        layoutSettings.value,
-        calibration.value,
-        preserved
-      )
-      layoutResult.value = result
-      if (
-        selectedPlacementIndex.value !== null &&
-        selectedPlacementIndex.value >= result.placements.length
-      ) {
-        selectedPlacementIndex.value = null
-      }
-    }
-  },
-  { deep: true, immediate: true }
+const orderBatch = useOrderBatchState(
+  () => layout.orderPlacements.value,
+  () => layout.pageInfo.value,
+  () => layout.batchPageInfo.value,
+  () => layout.editor.layoutSettings.value,
+  () => layout.editor.calibration.value
 )
 
-watch(
-  [orders, selectedOrderIds, patterns, layoutSettings, calibration, () => appMode.value],
-  () => {
-    if (appMode.value === 'order') {
-      const selectedOrders = orders.value.filter(o => selectedOrderIds.value.includes(o.id))
-      const preserved = new Map<string, PatternTransform>()
-      for (const pl of orderLayoutResult.value.placements) {
-        const key = `${pl.patternId}-${pl.configIndex}`
-        preserved.set(key, pl.transform)
-      }
-      const result = calculateOrderLayout(
-        selectedOrders,
-        patterns.value,
-        layoutSettings.value,
-        calibration.value,
-        preserved
-      )
-      orderLayoutResult.value = result
-      if (
-        selectedPlacementIndex.value !== null &&
-        selectedPlacementIndex.value >= result.placements.length
-      ) {
-        selectedPlacementIndex.value = null
-      }
-      const maxPage = Math.max(0, ...result.placements.map(p => p.pageIndex))
-      if (currentPage.value > maxPage) {
-        currentPage.value = 0
-      }
-    }
-  },
-  { deep: true, immediate: true }
-)
-
-const placements = computed<PlacedPattern[]>(() => {
-  return appMode.value === 'order'
-    ? orderLayoutResult.value.placements as PlacedPattern[]
-    : layoutResult.value.placements
-})
-
-const orderPlacements = computed<PlacedPatternWithOrder[]>(() => {
-  return orderLayoutResult.value.placements
-})
-
-const layoutConflicts = computed<LayoutConflict[]>(() => {
-  return appMode.value === 'order'
-    ? orderLayoutResult.value.conflicts
-    : layoutResult.value.conflicts
-})
-
-const pageInfo = computed<PageLayoutInfo[]>(() => {
-  return appMode.value === 'order'
-    ? orderLayoutResult.value.pageInfo
-    : layoutResult.value.pageInfo
-})
-
-const orderProgress = computed<Record<string, OrderLayoutProgress>>(() => {
-  return orderLayoutResult.value.orderProgress
-})
-
-const batchPageInfo = computed<PageBatchInfo[]>(() => {
-  return orderLayoutResult.value.batchPageInfo
-})
-
-const deliveryWarnings = computed<DeliveryWarning[]>(() => {
-  return orderLayoutResult.value.deliveryWarnings
-})
-
-const selectedOrders = computed(() => {
-  return orders.value.filter(o => selectedOrderIds.value.includes(o.id))
-})
-
-const estimate = computed<MaterialEstimate>(() => {
-  return calculateMaterialEstimate(
-    patterns.value,
-    placements.value,
-    patternConfigs.value,
-    layoutSettings.value,
-    calibration.value
-  )
-})
-
-const selectedTransform = computed<PatternTransform>(() => {
-  if (selectedPlacementIndex.value === null) {
-    return { rotation: 0, mirrorX: false, mirrorY: false, invertColor: false }
-  }
-  return placements.value[selectedPlacementIndex.value].transform
-})
-
-function handlePatternUpload(newPatterns: UploadedPattern[]) {
-  patterns.value = [...patterns.value, ...newPatterns]
-}
-
-function handlePatternRemove(id: string) {
-  patterns.value = patterns.value.filter(p => p.id !== id)
-  const next: Record<string, PatternIndependentConfig> = {}
-  for (const [pid, cfg] of Object.entries(patternConfigs.value)) {
-    if (pid !== id) next[pid] = cfg
-  }
-  patternConfigs.value = next
-  selectedPlacementIndex.value = null
-}
-
-function handleClearPatterns() {
-  patterns.value = []
-  patternConfigs.value = {}
-  setGroups.value = []
-  selectedPlacementIndex.value = null
-}
-
-function handlePlacementSelect(index: number | null) {
-  selectedPlacementIndex.value = index
-  if (index !== null) {
-    const pl = placements.value[index]
-    if (pl) {
-      currentPage.value = pl.pageIndex
-    }
-  }
-}
-
-function handlePageRefsReady(refs: Map<number, HTMLElement>) {
-  pageRefs.value = refs
-}
-
-function rotateSelected(delta: number) {
-  if (selectedPlacementIndex.value === null) return
-  const placement = placements.value[selectedPlacementIndex.value]
-  placement.transform.rotation = (placement.transform.rotation + delta + 360) % 360
-}
-
-function toggleMirrorX() {
-  if (selectedPlacementIndex.value === null) return
-  placements.value[selectedPlacementIndex.value].transform.mirrorX =
-    !placements.value[selectedPlacementIndex.value].transform.mirrorX
-}
-
-function toggleMirrorY() {
-  if (selectedPlacementIndex.value === null) return
-  placements.value[selectedPlacementIndex.value].transform.mirrorY =
-    !placements.value[selectedPlacementIndex.value].transform.mirrorY
-}
-
-function toggleInvertColor() {
-  if (selectedPlacementIndex.value === null) return
-  placements.value[selectedPlacementIndex.value].transform.invertColor =
-    !placements.value[selectedPlacementIndex.value].transform.invertColor
-}
-
-function resetTransform() {
-  if (selectedPlacementIndex.value === null) return
-  placements.value[selectedPlacementIndex.value].transform = {
-    rotation: 0,
-    mirrorX: false,
-    mirrorY: false,
-    invertColor: false
-  }
-}
-
-function handlePatternConfigUpdate(
-  patternId: string,
-  patch: Partial<PatternIndependentConfig>
-) {
-  patternConfigs.value = updatePatternConfig(patternConfigs.value, patternId, patch)
-}
-
-function handleCreateSetGroup(name: string) {
-  setGroups.value = [...setGroups.value, createSetGroup(name)]
-}
-
-function handleAssignSetGroup(patternIds: string[], groupId: string | null) {
-  patternConfigs.value = assignPatternsToSetGroup(patternConfigs.value, patternIds, groupId)
-}
-
-function handleDeleteSetGroup(groupId: string) {
-  setGroups.value = setGroups.value.filter(g => g.id !== groupId)
-  const next: Record<string, PatternIndependentConfig> = {}
-  for (const [pid, cfg] of Object.entries(patternConfigs.value)) {
-    next[pid] = cfg.setGroupId === groupId ? { ...cfg, setGroupId: null } : cfg
-  }
-  patternConfigs.value = next
-}
-
-function handleCalibrationUpdate(next: PrintCalibration) {
-  calibration.value = next
-}
-
-function handleApplyConflictSuggestion(suggestion: LayoutConflictSuggestion) {
-  const result = applyConflictSuggestion(
-    layoutSettings.value,
-    calibration.value,
-    patternConfigs.value,
-    suggestion
-  )
-  layoutSettings.value = result.settings
-  calibration.value = result.calibration
-  patternConfigs.value = result.patternConfigs
-}
-
-function handleUpdateNailSize(size: NailSize) {
-  layoutSettings.value.nailSize = size
-  patternConfigs.value = updateConfigSize(patternConfigs.value, size)
-}
-
-function handleUpdateNailShape(shape: NailShape) {
-  layoutSettings.value.nailShape = shape
-  patternConfigs.value = updateConfigShape(patternConfigs.value, shape)
-}
-
-function handleLoadScheme(scheme: LayoutScheme) {
-  patterns.value = scheme.patterns
-  patternConfigs.value = scheme.patternConfigs || {}
-  setGroups.value = scheme.setGroups || []
-  layoutSettings.value = scheme.settings
-  calibration.value = scheme.calibration || { ...DEFAULT_CALIBRATION }
-}
-
-function handleOrdersChange(newOrders: CustomerOrder[]) {
-  orders.value = newOrders
-}
-
-function handleToggleSelectOrder(orderId: string) {
-  if (selectedOrderIds.value.includes(orderId)) {
-    selectedOrderIds.value = selectedOrderIds.value.filter(id => id !== orderId)
-  } else {
-    selectedOrderIds.value = [...selectedOrderIds.value, orderId]
-  }
-}
-
-function handleBoostPriority(orderId: string) {
-  orders.value = boostOrderPriority(orderId)
-}
-
-function handleCreateBatch(orderIds: string[]) {
-  selectedOrderIds.value = orderIds
-  currentBatchName.value = `生产批次 - ${new Date().toLocaleDateString()}`
-}
-
-function handleLoadBatch(batch: ProductionBatch) {
-  selectedOrderIds.value = batch.orderIds
-  layoutSettings.value = batch.settings
-  calibration.value = batch.calibration
-  currentBatchName.value = batch.name
-  orderLayoutResult.value = {
-    placements: batch.placements as PlacedPatternWithOrder[],
-    conflicts: [],
-    pageInfo: batch.pageInfo,
-    orderProgress: {},
-    batchPageInfo: batch.batchPageInfo,
-    deliveryWarnings: []
-  }
-}
-
-function handleSaveCurrentBatch() {
-  if (selectedOrderIds.value.length === 0) {
-    alert('请先选择要合并的订单')
-    return
-  }
-  if (!currentBatchName.value.trim()) {
-    currentBatchName.value = `生产批次 - ${new Date().toLocaleDateString()}`
-  }
-  const existingBatches = getAllBatches()
-  const batch: ProductionBatch = {
-    id: existingBatches.length > 0 ? `${Date.now()}` : Date.now().toString(),
-    name: currentBatchName.value,
-    orderIds: [...selectedOrderIds.value],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    placements: [...orderPlacements.value],
-    pageInfo: [...pageInfo.value],
-    batchPageInfo: [...batchPageInfo.value],
-    settings: { ...layoutSettings.value },
-    calibration: { ...calibration.value }
-  }
-  saveBatch(batch)
-  alert('批次已保存到本地')
-}
-
-async function handleExportPDF() {
-  if (placements.value.length === 0) {
-    alert('请先上传图案进行排版')
-    return
-  }
-  isExporting.value = true
-  try {
-    await nextTick()
-    if (appMode.value === 'order' && selectedOrders.value.length > 0) {
-      await exportToPDFWithOrderList(
-        pageRefs.value,
-        calibration.value,
-        selectedOrders.value,
-        orderPlacements.value,
-        orderProgress.value,
-        currentBatchName.value
-      )
-    } else {
-      await exportToPDF(pageRefs.value, calibration.value)
-    }
-  } catch (e) {
-    console.error('导出PDF失败:', e)
-    alert('导出PDF失败，请重试')
-  } finally {
-    isExporting.value = false
-  }
-}
-
-async function handleExportCalibrationRuler() {
-  try {
-    await exportCalibrationRulerPDF()
-  } catch (e) {
-    console.error('导出校准尺失败:', e)
-    alert('导出校准尺失败，请重试')
-  }
-}
-
-function handlePrint() {
-  window.print()
-}
-
-function handleToggleQCMode() {
-  if (!qcMode.value) {
-    if (placements.value.length === 0) {
-      alert('请先进行排版后再开始质检')
-      return
-    }
-  }
-  qcMode.value = !qcMode.value
-  if (!qcMode.value) {
-    qcSession.value = null
-    qcStats.value = null
-  }
-}
-
-function handleQCStart(session: QCInspectionSession) {
-  qcSession.value = session
-  qcMode.value = true
-}
-
-function handleQCExit() {
-  qcSession.value = null
-  qcStats.value = null
-  qcMode.value = false
-}
-
-function handleQCSessionChange(session: QCInspectionSession) {
-  qcSession.value = session
-}
-
-function handleQCStatsChange(stats: QCBatchStats) {
-  qcStats.value = stats
-}
-
-function handleApplyReworkBatch(batch: ReworkBatch) {
+function onApplyReworkBatch(batch: ReworkBatch) {
   if (batch.placements.length > 0) {
-    if (appMode.value === 'order') {
-      orderLayoutResult.value = {
-        placements: batch.placements,
-        conflicts: [],
-        pageInfo: batch.pageInfo,
-        orderProgress: {},
-        batchPageInfo: [],
-        deliveryWarnings: []
-      }
+    if (layout.layoutMode.value === 'order' || layout.layoutMode.value === 'rework') {
+      layout.applyReworkPlacements(batch.placements, batch.pageInfo)
     } else {
-      layoutResult.value = {
-        placements: batch.placements as any,
-        conflicts: [],
-        pageInfo: batch.pageInfo
-      }
+      const normalPlacements: PlacedPattern[] = batch.placements.map(p => ({
+        patternId: p.patternId,
+        x: p.x,
+        y: p.y,
+        width: p.width,
+        height: p.height,
+        transform: p.transform,
+        pageIndex: p.pageIndex,
+        nailSize: p.nailSize,
+        nailShape: p.nailShape,
+        setGroupId: p.setGroupId,
+        configIndex: p.configIndex
+      }))
+      const normalPageInfo: PageLayoutInfo[] = batch.pageInfo
+      layout.applyNormalPlacements(normalPlacements, normalPageInfo)
     }
-    layoutSettings.value = batch.settings
-    calibration.value = batch.calibration
-    currentBatchName.value = batch.name
-    qcMode.value = false
-    qcSession.value = null
-    qcStats.value = null
+    layout.editor.layoutSettings.value.nailSize = batch.settings.nailSize
+    layout.editor.layoutSettings.value.nailShape = batch.settings.nailShape
+    layout.editor.layoutSettings.value.gapX = batch.settings.gapX
+    layout.editor.layoutSettings.value.gapY = batch.settings.gapY
+    layout.editor.layoutSettings.value.margin = batch.settings.margin
+    layout.editor.layoutSettings.value.copiesPerNail = batch.settings.copiesPerNail
+
+    layout.editor.calibration.value.enabled = batch.calibration.enabled
+    layout.editor.calibration.value.referenceLengthMm = batch.calibration.referenceLengthMm
+    layout.editor.calibration.value.measuredHorizontalMm = batch.calibration.measuredHorizontalMm
+    layout.editor.calibration.value.measuredVerticalMm = batch.calibration.measuredVerticalMm
+    layout.editor.calibration.value.scaleX = batch.calibration.scaleX
+    layout.editor.calibration.value.scaleY = batch.calibration.scaleY
+
+    orderBatch.currentBatchName.value = batch.name
+    qc.qcMode.value = false
+    qc.qcSession.value = null
+    qc.qcStats.value = null
   }
+}
+
+const qc = useQualityControlState(
+  () => layout.placements.value,
+  () => layout.editor.patterns.value,
+  () => orderBatch.orders.value,
+  () => orderBatch.selectedOrderIds.value,
+  () => orderBatch.currentBatchName.value,
+  () => layout.layoutMode.value,
+  () => layout.editor.layoutSettings.value,
+  () => layout.editor.calibration.value,
+  onApplyReworkBatch
+)
+
+const exportActions = useExportActions(
+  () => layout.editor.pageRefs.value,
+  () => layout.editor.calibration.value,
+  () => layout.layoutMode.value,
+  () => orderBatch.selectedOrders.value,
+  () => layout.orderPlacements.value,
+  () => layout.orderProgress.value,
+  () => orderBatch.currentBatchName.value,
+  () => layout.placements.value.length
+)
+
+const appMode = computed<'normal' | 'order'>(() => {
+  return layout.layoutMode.value === 'normal' ? 'normal' : 'order'
+})
+
+function setAppMode(mode: 'normal' | 'order') {
+  layout.setMode(mode as LayoutMode)
 }
 
 function handleJumpToPage(pageIndex: number) {
-  currentPage.value = pageIndex
+  layout.editor.currentPage.value = pageIndex
 }
+
+function handleUpdateSelectedPlacementIndex(index: number | null) {
+  layout.editor.selectedPlacementIndex.value = index
+}
+
+const editorLayoutSettings = computed(() => layout.editor.layoutSettings.value)
+const editorCalibration = computed(() => layout.editor.calibration.value)
+const editorPatterns = computed(() => layout.editor.patterns.value)
+const editorPatternConfigs = computed(() => layout.editor.patternConfigs.value)
+const editorSetGroups = computed(() => layout.editor.setGroups.value)
+const editorSelectedPlacementIndex = computed(() => layout.editor.selectedPlacementIndex.value)
+const editorPreviewMode = computed(() => layout.editor.previewMode.value)
+const editorCurrentPage = computed(() => layout.editor.currentPage.value)
+
+const layoutPlacements = computed(() => layout.placements.value)
+const layoutPageInfo = computed(() => layout.pageInfo.value)
+const layoutBatchPageInfo = computed(() => layout.batchPageInfo.value)
+const layoutOrderPlacements = computed(() => layout.orderPlacements.value)
+const layoutOrderProgress = computed(() => layout.orderProgress.value)
+const layoutEstimate = computed(() => layout.estimate.value)
+const layoutConflicts = computed(() => layout.layoutConflicts.value)
+const layoutDeliveryWarnings = computed(() => layout.deliveryWarnings.value)
+const layoutSelectedTransform = computed(() => layout.selectedTransform.value)
+const layoutLayoutMode = computed(() => layout.layoutMode.value)
+
+const obOrders = computed(() => orderBatch.orders.value)
+const obSelectedOrderIds = computed(() => orderBatch.selectedOrderIds.value)
+const obCurrentBatchName = computed(() => orderBatch.currentBatchName.value)
+const obShowOrderTags = computed(() => orderBatch.showOrderTags.value)
+const obSelectedOrders = computed(() => orderBatch.selectedOrders.value)
+
+const qcMode = computed(() => qc.qcMode.value)
+const qcSession = computed(() => qc.qcSession.value)
+const qcStats = computed(() => qc.qcStats.value)
+
+const expIsExporting = computed(() => exportActions.isExporting.value)
 </script>
 
 <template>
@@ -556,7 +172,7 @@ function handleJumpToPage(pageIndex: number) {
                 ? 'bg-white text-gray-800 shadow-sm'
                 : 'text-gray-500 hover:text-gray-700'
             ]"
-            @click="appMode = 'normal'"
+            @click="setAppMode('normal')"
           >
             普通排版
           </button>
@@ -567,7 +183,7 @@ function handleJumpToPage(pageIndex: number) {
                 ? 'bg-white text-gray-800 shadow-sm'
                 : 'text-gray-500 hover:text-gray-700'
             ]"
-            @click="appMode = 'order'"
+            @click="setAppMode('order')"
           >
             订单生产
           </button>
@@ -577,7 +193,7 @@ function handleJumpToPage(pageIndex: number) {
           <label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
             <input
               type="checkbox"
-              v-model="showOrderTags"
+              v-model="obShowOrderTags"
               class="w-4 h-4 accent-primary-500"
             />
             显示订单标签
@@ -592,7 +208,7 @@ function handleJumpToPage(pageIndex: number) {
               : 'bg-purple-50 hover:bg-purple-100 text-purple-700'
           ]"
           title="打印质检与返工追踪"
-          @click="handleToggleQCMode"
+          @click="qc.handleToggleQCMode"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -603,7 +219,7 @@ function handleJumpToPage(pageIndex: number) {
         <button
           class="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
           title="打印校准尺"
-          @click="handleExportCalibrationRuler"
+          @click="exportActions.handleExportCalibrationRuler"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -613,14 +229,14 @@ function handleJumpToPage(pageIndex: number) {
         <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
             type="checkbox"
-            v-model="previewMode"
+            v-model="editorPreviewMode"
             class="w-4 h-4 accent-primary-500"
           />
           预览模式
         </label>
         <button
           class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-          @click="handlePrint"
+          @click="exportActions.handlePrint"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
@@ -629,17 +245,17 @@ function handleJumpToPage(pageIndex: number) {
         </button>
         <button
           class="px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="isExporting || placements.length === 0"
-          @click="handleExportPDF"
+          :disabled="expIsExporting || layoutPlacements.length === 0"
+          @click="exportActions.handleExportPDF"
         >
-          <svg v-if="!isExporting" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg v-if="!expIsExporting" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
           <svg v-else class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
-          {{ isExporting ? '导出中...' : appMode === 'order' && selectedOrders.length > 0 ? '导出 PDF(含分拣单)' : '导出 PDF' }}
+          {{ expIsExporting ? '导出中...' : appMode === 'order' && obSelectedOrders.length > 0 ? '导出 PDF(含分拣单)' : '导出 PDF' }}
         </button>
       </div>
     </header>
@@ -648,126 +264,126 @@ function handleJumpToPage(pageIndex: number) {
       <aside class="w-80 bg-white border-r border-gray-200 overflow-y-auto scrollbar-thin flex-shrink-0">
         <template v-if="qcMode">
           <QualityControlPanel
-            :placements="placements"
-            :patterns="patterns"
-            :orders="orders"
-            :selected-order-ids="selectedOrderIds"
-            :current-batch-name="currentBatchName"
+            :placements="layoutPlacements"
+            :patterns="editorPatterns"
+            :orders="obOrders"
+            :selected-order-ids="obSelectedOrderIds"
+            :current-batch-name="obCurrentBatchName"
             :app-mode="appMode"
-            :selected-placement-index="selectedPlacementIndex"
-            :layout-settings="layoutSettings"
-            :calibration="calibration"
-            @update:selected-placement-index="selectedPlacementIndex = $event"
-            @start-qc="handleQCStart"
-            @exit-qc="handleQCExit"
-            @apply-rework-batch="handleApplyReworkBatch"
-            @session-change="handleQCSessionChange"
-            @stats-change="handleQCStatsChange"
+            :selected-placement-index="editorSelectedPlacementIndex"
+            :layout-settings="editorLayoutSettings"
+            :calibration="editorCalibration"
+            @update:selected-placement-index="handleUpdateSelectedPlacementIndex"
+            @start-qc="qc.handleQCStart"
+            @exit-qc="qc.handleQCExit"
+            @apply-rework-batch="qc.handleApplyReworkBatch"
+            @session-change="qc.handleQCSessionChange"
+            @stats-change="qc.handleQCStatsChange"
             @jump-to-page="handleJumpToPage"
           />
         </template>
         <template v-else-if="appMode === 'normal'">
-          <PatternUploader @upload="handlePatternUpload" />
+          <PatternUploader @upload="layout.patterns.handlePatternUpload" />
           <PatternList
-            :patterns="patterns"
-            :pattern-configs="patternConfigs"
-            :set-groups="setGroups"
-            :default-config="createDefaultPatternConfig(layoutSettings)"
-            @remove="handlePatternRemove"
-            @clear="handleClearPatterns"
-            @update-config="handlePatternConfigUpdate"
-            @create-set-group="handleCreateSetGroup"
-            @assign-set-group="handleAssignSetGroup"
-            @delete-set-group="handleDeleteSetGroup"
+            :patterns="editorPatterns"
+            :pattern-configs="editorPatternConfigs"
+            :set-groups="editorSetGroups"
+            :default-config="layout.createDefaultPatternConfig(editorLayoutSettings)"
+            @remove="layout.patterns.handlePatternRemove"
+            @clear="layout.patterns.handleClearPatterns"
+            @update-config="layout.patterns.handlePatternConfigUpdate"
+            @create-set-group="layout.patterns.handleCreateSetGroup"
+            @assign-set-group="layout.patterns.handleAssignSetGroup"
+            @delete-set-group="layout.patterns.handleDeleteSetGroup"
           />
           <NailSelector
-            :selected-size="layoutSettings.nailSize"
-            :selected-shape="layoutSettings.nailShape"
-            @update:selected-size="handleUpdateNailSize"
-            @update:selected-shape="handleUpdateNailShape"
+            :selected-size="editorLayoutSettings.nailSize"
+            :selected-shape="editorLayoutSettings.nailShape"
+            @update:selected-size="layout.patterns.handleUpdateNailSize"
+            @update:selected-shape="layout.patterns.handleUpdateNailShape"
           />
           <LayoutSettingsPanel
-            :settings="layoutSettings"
-            @update:settings="(s: LayoutSettings) => layoutSettings = s"
+            :settings="editorLayoutSettings"
+            @update:settings="(s) => { layout.editor.layoutSettings.value = s }"
           />
           <CalibrationPanel
-            :calibration="calibration"
-            @update="handleCalibrationUpdate"
-            @export-ruler="handleExportCalibrationRuler"
+            :calibration="editorCalibration"
+            @update="layout.calibration.handleCalibrationUpdate"
+            @export-ruler="exportActions.handleExportCalibrationRuler"
           />
           <PatternEditor
-            :transform="selectedTransform"
-            :has-selection="selectedPlacementIndex !== null"
-            @rotate="rotateSelected"
-            @mirror-x="toggleMirrorX"
-            @mirror-y="toggleMirrorY"
-            @invert-color="toggleInvertColor"
-            @reset="resetTransform"
+            :transform="layoutSelectedTransform"
+            :has-selection="editorSelectedPlacementIndex !== null"
+            @rotate="layout.transform.rotateSelected"
+            @mirror-x="layout.transform.toggleMirrorX"
+            @mirror-y="layout.transform.toggleMirrorY"
+            @invert-color="layout.transform.toggleInvertColor"
+            @reset="layout.transform.resetTransform"
           />
-          <MaterialEstimatePanel :estimate="estimate" />
+          <MaterialEstimatePanel :estimate="layoutEstimate" />
           <LayoutConflictPanel
             :conflicts="layoutConflicts"
-            @apply-suggestion="handleApplyConflictSuggestion"
+            @apply-suggestion="layout.handleApplyConflictSuggestion"
           />
           <SchemeManager
-            :current-patterns="patterns"
-            :current-pattern-configs="patternConfigs"
-            :current-set-groups="setGroups"
-            :current-settings="layoutSettings"
-            :current-calibration="calibration"
-            @load="handleLoadScheme"
+            :current-patterns="editorPatterns"
+            :current-pattern-configs="editorPatternConfigs"
+            :current-set-groups="editorSetGroups"
+            :current-settings="editorLayoutSettings"
+            :current-calibration="editorCalibration"
+            @load="layout.handleLoadScheme"
           />
         </template>
 
         <template v-else>
-          <PatternUploader @upload="handlePatternUpload" />
+          <PatternUploader @upload="layout.patterns.handlePatternUpload" />
           <OrderManager
-            :patterns="patterns"
-            :selected-order-ids="selectedOrderIds"
-            @orders-change="handleOrdersChange"
-            @toggle-select-order="handleToggleSelectOrder"
-            @boost-priority="handleBoostPriority"
+            :patterns="editorPatterns"
+            :selected-order-ids="obSelectedOrderIds"
+            @orders-change="orderBatch.handleOrdersChange"
+            @toggle-select-order="orderBatch.handleToggleSelectOrder"
+            @boost-priority="orderBatch.handleBoostPriority"
           />
           <BatchManager
-            :orders="orders"
-            :selected-order-ids="selectedOrderIds"
-            :settings="layoutSettings"
-            :calibration="calibration"
-            :placements="orderPlacements"
-            :page-info="pageInfo"
-            :batch-page-info="batchPageInfo"
-            @create-batch="handleCreateBatch"
-            @load-batch="handleLoadBatch"
-            @save-current-batch="handleSaveCurrentBatch"
+            :orders="obOrders"
+            :selected-order-ids="obSelectedOrderIds"
+            :settings="editorLayoutSettings"
+            :calibration="editorCalibration"
+            :placements="layoutOrderPlacements"
+            :page-info="layoutPageInfo"
+            :batch-page-info="layoutBatchPageInfo"
+            @create-batch="orderBatch.handleCreateBatch"
+            @load-batch="orderBatch.handleLoadBatch"
+            @save-current-batch="orderBatch.handleSaveCurrentBatch"
           />
           <NailSelector
-            :selected-size="layoutSettings.nailSize"
-            :selected-shape="layoutSettings.nailShape"
-            @update:selected-size="handleUpdateNailSize"
-            @update:selected-shape="handleUpdateNailShape"
+            :selected-size="editorLayoutSettings.nailSize"
+            :selected-shape="editorLayoutSettings.nailShape"
+            @update:selected-size="layout.patterns.handleUpdateNailSize"
+            @update:selected-shape="layout.patterns.handleUpdateNailShape"
           />
           <LayoutSettingsPanel
-            :settings="layoutSettings"
-            @update:settings="(s: LayoutSettings) => layoutSettings = s"
+            :settings="editorLayoutSettings"
+            @update:settings="(s) => { layout.editor.layoutSettings.value = s }"
           />
           <CalibrationPanel
-            :calibration="calibration"
-            @update="handleCalibrationUpdate"
-            @export-ruler="handleExportCalibrationRuler"
+            :calibration="editorCalibration"
+            @update="layout.calibration.handleCalibrationUpdate"
+            @export-ruler="exportActions.handleExportCalibrationRuler"
           />
           <PatternEditor
-            :transform="selectedTransform"
-            :has-selection="selectedPlacementIndex !== null"
-            @rotate="rotateSelected"
-            @mirror-x="toggleMirrorX"
-            @mirror-y="toggleMirrorY"
-            @invert-color="toggleInvertColor"
-            @reset="resetTransform"
+            :transform="layoutSelectedTransform"
+            :has-selection="editorSelectedPlacementIndex !== null"
+            @rotate="layout.transform.rotateSelected"
+            @mirror-x="layout.transform.toggleMirrorX"
+            @mirror-y="layout.transform.toggleMirrorY"
+            @invert-color="layout.transform.toggleInvertColor"
+            @reset="layout.transform.resetTransform"
           />
-          <MaterialEstimatePanel :estimate="estimate" />
+          <MaterialEstimatePanel :estimate="layoutEstimate" />
           <LayoutConflictPanel
             :conflicts="layoutConflicts"
-            @apply-suggestion="handleApplyConflictSuggestion"
+            @apply-suggestion="layout.handleApplyConflictSuggestion"
           />
         </template>
       </aside>
@@ -776,37 +392,37 @@ function handleJumpToPage(pageIndex: number) {
         <div class="h-full flex">
           <div class="flex-1 overflow-auto">
             <PrintCanvas
-              :placements="placements"
-              :patterns="patterns"
-              :pattern-configs="patternConfigs"
-              :set-groups="setGroups"
-              :selected-placement-index="selectedPlacementIndex"
-              :page-info="pageInfo"
-              :preview-mode="previewMode"
-              :calibration="calibration"
-              :orders="appMode === 'order' ? selectedOrders : undefined"
-              :batch-page-info="appMode === 'order' ? batchPageInfo : undefined"
-              :show-order-tags="appMode === 'order' && showOrderTags"
+              :placements="layoutPlacements"
+              :patterns="editorPatterns"
+              :pattern-configs="editorPatternConfigs"
+              :set-groups="editorSetGroups"
+              :selected-placement-index="editorSelectedPlacementIndex"
+              :page-info="layoutPageInfo"
+              :preview-mode="editorPreviewMode"
+              :calibration="editorCalibration"
+              :orders="appMode === 'order' ? obSelectedOrders : undefined"
+              :batch-page-info="appMode === 'order' ? layoutBatchPageInfo : undefined"
+              :show-order-tags="appMode === 'order' && obShowOrderTags"
               :qc-session="qcSession"
               :qc-mode="qcMode"
-              @select="handlePlacementSelect"
-              @page-refs-ready="handlePageRefsReady"
+              @select="layout.handlePlacementSelect"
+              @page-refs-ready="layout.handlePageRefsReady"
             />
           </div>
 
           <template v-if="appMode === 'order' || qcMode">
             <div class="w-72 bg-white border-l border-gray-200 overflow-y-auto scrollbar-thin flex-shrink-0">
               <OrderSidebar
-                :orders="selectedOrders"
-                :placements="orderPlacements"
-                :order-progress="orderProgress"
-                :batch-page-info="batchPageInfo"
-                :delivery-warnings="deliveryWarnings"
-                :current-page="currentPage"
+                :orders="obSelectedOrders"
+                :placements="layoutOrderPlacements"
+                :order-progress="layoutOrderProgress"
+                :batch-page-info="layoutBatchPageInfo"
+                :delivery-warnings="layoutDeliveryWarnings"
+                :current-page="editorCurrentPage"
                 :qc-session="qcSession"
                 :qc-mode="qcMode"
-                @boost-priority="handleBoostPriority"
-                @select-order="(id) => handleToggleSelectOrder(id)"
+                @boost-priority="orderBatch.handleBoostPriority"
+                @select-order="(id) => orderBatch.handleToggleSelectOrder(id)"
               />
             </div>
           </template>
