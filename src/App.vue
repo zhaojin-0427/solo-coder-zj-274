@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { LayoutMode } from './types/unified'
 import { useLayoutState } from './composables/useLayoutState'
 import { useOrderBatchState } from './composables/useOrderBatchState'
 import { useQualityControlState } from './composables/useQualityControlState'
 import { useExportActions } from './composables/useExportActions'
-import type { ReworkBatch, PageLayoutInfo, PlacedPattern } from './types'
+import type { ReworkBatch, PageLayoutInfo, PlacedPattern, UploadedPattern, PatternIndependentConfig, OrderPatternItem } from './types'
 import QualityControlPanel from './components/QualityControlPanel.vue'
 import PatternUploader from './components/PatternUploader.vue'
 import PatternList from './components/PatternList.vue'
@@ -20,6 +20,10 @@ import LayoutConflictPanel from './components/LayoutConflictPanel.vue'
 import OrderManager from './components/OrderManager.vue'
 import BatchManager from './components/BatchManager.vue'
 import OrderSidebar from './components/OrderSidebar.vue'
+import MaterialLibraryPanel from './components/MaterialLibraryPanel.vue'
+import SaveMaterialDialog from './components/SaveMaterialDialog.vue'
+import { addItemsToOrder } from './utils/order'
+import { createMaterial } from './utils/materialLibrary'
 
 const layout = useLayoutState(
   () => orderBatch.orders.value,
@@ -152,6 +156,75 @@ const qcSession = computed(() => qc.qcSession.value)
 const qcStats = computed(() => qc.qcStats.value)
 
 const expIsExporting = computed(() => exportActions.isExporting.value)
+
+const saveDialogVisible = ref(false)
+const saveDialogPattern = ref<UploadedPattern | null>(null)
+const saveDialogDefaultConfig = ref<PatternIndependentConfig | null>(null)
+const materialLibraryVersion = ref(0)
+
+function handleSaveToLibrary(patternId: string) {
+  const pat = layout.editor.patterns.value.find(p => p.id === patternId)
+  if (!pat) return
+  saveDialogPattern.value = pat
+  saveDialogDefaultConfig.value = layout.editor.patternConfigs.value[patternId] || null
+  saveDialogVisible.value = true
+}
+
+function handleBatchSaveToLibrary(patternIds: string[]) {
+  let count = 0
+  for (const pid of patternIds) {
+    const pat = layout.editor.patterns.value.find(p => p.id === pid)
+    if (!pat) continue
+    const cfg = layout.editor.patternConfigs.value[pid]
+    createMaterial({
+      name: pat.name.replace(/\.[^/.]+$/, ''),
+      tags: [],
+      dataUrl: pat.dataUrl,
+      width: pat.width,
+      height: pat.height,
+      defaultNailSize: cfg?.nailSize || 'M',
+      defaultNailShape: cfg?.nailShape || 'square',
+      defaultQuantity: cfg?.quantity || 5
+    })
+    count++
+  }
+  materialLibraryVersion.value++
+  if (count > 0) {
+    alert(`已将 ${count} 个图案保存到素材库`)
+  }
+}
+
+function handleMaterialSaved() {
+  materialLibraryVersion.value++
+}
+
+function handleAddPatternsFromLibrary(
+  newPatterns: UploadedPattern[],
+  configs: Record<string, PatternIndependentConfig>
+) {
+  const existing = layout.editor.patterns.value
+  layout.editor.patterns.value = [...existing, ...newPatterns]
+  const mergedConfigs = { ...layout.editor.patternConfigs.value }
+  for (const [pid, cfg] of Object.entries(configs)) {
+    mergedConfigs[pid] = cfg
+  }
+  layout.editor.patternConfigs.value = mergedConfigs
+}
+
+function handleAddOrderItemsFromLibrary(
+  orderId: string,
+  patterns: UploadedPattern[],
+  items: OrderPatternItem[]
+) {
+  const existing = layout.editor.patterns.value
+  const existingIds = new Set(existing.map(p => p.id))
+  const toAdd = patterns.filter(p => !existingIds.has(p.id))
+  if (toAdd.length > 0) {
+    layout.editor.patterns.value = [...existing, ...toAdd]
+  }
+  const updated = addItemsToOrder(orderId, items)
+  orderBatch.handleOrdersChange(updated)
+}
 </script>
 
 <template>
@@ -301,6 +374,15 @@ const expIsExporting = computed(() => exportActions.isExporting.value)
             @create-set-group="layout.patterns.handleCreateSetGroup"
             @assign-set-group="layout.patterns.handleAssignSetGroup"
             @delete-set-group="layout.patterns.handleDeleteSetGroup"
+            @save-to-library="handleSaveToLibrary"
+            @batch-save-to-library="handleBatchSaveToLibrary"
+          />
+          <MaterialLibraryPanel
+            :key="materialLibraryVersion"
+            :app-mode="appMode"
+            :patterns="editorPatterns"
+            @add-patterns="handleAddPatternsFromLibrary"
+            @add-order-items="handleAddOrderItemsFromLibrary"
           />
           <NailSelector
             :selected-size="editorLayoutSettings.nailSize"
@@ -391,6 +473,15 @@ const expIsExporting = computed(() => exportActions.isExporting.value)
             :conflicts="layoutConflicts"
             @apply-suggestion="layout.handleApplyConflictSuggestion"
           />
+          <MaterialLibraryPanel
+            :key="materialLibraryVersion"
+            :app-mode="appMode"
+            :patterns="editorPatterns"
+            :orders="obOrders"
+            :selected-order-ids="obSelectedOrderIds"
+            @add-patterns="handleAddPatternsFromLibrary"
+            @add-order-items="handleAddOrderItemsFromLibrary"
+          />
         </template>
       </aside>
 
@@ -435,5 +526,13 @@ const expIsExporting = computed(() => exportActions.isExporting.value)
         </div>
       </main>
     </div>
+
+    <SaveMaterialDialog
+      :visible="saveDialogVisible"
+      :pattern="saveDialogPattern"
+      :default-config="saveDialogDefaultConfig"
+      @close="saveDialogVisible = false"
+      @saved="handleMaterialSaved"
+    />
   </div>
 </template>

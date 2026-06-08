@@ -409,3 +409,16 @@ export function estimateSortingTime(placements: PlacedPatternWithOrder[]): numbe
   const orderIds = new Set(placements.map(p => p.orderId).filter(Boolean) as string[])
   return orderIds.size * 60 + placements.length * 2
 }
+
+export function addItemsToOrder(orderId: string, items: OrderPatternItem[]): CustomerOrder[] {
+  const orders = getAllOrders()
+  const idx = orders.findIndex(o => o.id === orderId)
+  if (idx < 0) return orders
+  orders[idx] = {
+    ...orders[idx],
+    items: [...orders[idx].items, ...items],
+    updatedAt: Date.now()
+  }
+  saveOrders(orders)
+  return orders
+}

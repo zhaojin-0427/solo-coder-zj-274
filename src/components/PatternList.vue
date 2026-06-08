@@ -17,6 +17,8 @@ const emit = defineEmits<{
   (e: 'createSetGroup', name: string): void
   (e: 'assignSetGroup', patternIds: string[], groupId: string | null): void
   (e: 'deleteSetGroup', groupId: string): void
+  (e: 'saveToLibrary', patternId: string): void
+  (e: 'batchSaveToLibrary', patternIds: string[]): void
 }>()
 
 const editingPatternId = ref<string | null>(null)
@@ -101,6 +103,13 @@ function getGroup(id: string | null): SetGroup | undefined {
           @click="showBatchPanel = !showBatchPanel"
         >
           {{ showBatchPanel ? '收起批量' : '批量操作' }}
+        </button>
+        <button
+          v-if="selectedPatternIds.size > 0"
+          class="text-xs text-emerald-600 hover:text-emerald-700"
+          @click="emit('batchSaveToLibrary', Array.from(selectedPatternIds))"
+        >
+          保存选中到素材库
         </button>
         <button
           v-if="patterns.length > 0"
@@ -247,10 +256,17 @@ function getGroup(id: string | null): SetGroup | undefined {
           <div class="flex-1 min-w-0">
             <div class="flex items-center justify-between">
               <p class="text-xs font-medium text-gray-800 truncate">{{ pattern.name }}</p>
-              <button
-                class="text-[10px] text-gray-400 hover:text-red-500"
-                @click="emit('remove', pattern.id)"
-              >删除</button>
+              <div class="flex items-center gap-1">
+                <button
+                  class="text-[10px] text-emerald-500 hover:text-emerald-600"
+                  title="保存到素材库"
+                  @click="emit('saveToLibrary', pattern.id)"
+                >存素材</button>
+                <button
+                  class="text-[10px] text-gray-400 hover:text-red-500"
+                  @click="emit('remove', pattern.id)"
+                >删除</button>
+              </div>
             </div>
             <div class="flex items-center gap-1 text-[10px] text-gray-500 mt-0.5">
               <span class="px-1 py-0.5 bg-gray-100 rounded">{{ patternConfigs[pattern.id]?.nailSize || 'M' }}</span>
