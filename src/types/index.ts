@@ -340,3 +340,78 @@ export interface QCMaterialCostConfig {
   inkCostPerPage: number
   laborCostPerSheet: number
 }
+
+export type PrintViewMode = 'stickers' | 'delivery_labels' | 'packing_list'
+
+export interface DeliveryLabelConfig {
+  labelsPerPage: number
+  columns: number
+  rows: number
+  marginMm: number
+  gapMm: number
+  labelWidthMm: number
+  labelHeightMm: number
+  showCutLines: boolean
+}
+
+export interface DeliveryLabelData {
+  orderId: string
+  orderNo: string
+  customerName: string
+  deliveryDate: string
+  isUrgent: boolean
+  totalStickers: number
+  nailSizes: string[]
+  nailShapes: string[]
+  nailSummary: string
+  notes: string
+  colorTag: string
+  qcStatus: QCItemStatus | 'not_checked'
+  isDeliverable: boolean
+}
+
+export interface PackingListItemDetail {
+  patternName: string
+  nailSize: NailSize
+  nailShape: NailShape
+  quantity: number
+  qcStatus: QCItemStatus
+  passedCount: number
+  failedCount: number
+  isDeliverable: boolean
+}
+
+export interface PackingListOrderData {
+  orderId: string
+  orderNo: string
+  customerName: string
+  deliveryDate: string
+  isUrgent: boolean
+  colorTag: string
+  notes: string
+  totalStickers: number
+  totalPassed: number
+  totalFailed: number
+  totalPending: number
+  isDeliverable: boolean
+  qcStatus: QCItemStatus | 'not_checked'
+  items: PackingListItemDetail[]
+}
+
+export interface DeliveryLabelPageLayout {
+  labels: DeliveryLabelData[]
+  pageIndex: number
+}
+
+export const DEFAULT_DELIVERY_LABEL_CONFIG: DeliveryLabelConfig = {
+  labelsPerPage: 10,
+  columns: 2,
+  rows: 5,
+  marginMm: 10,
+  gapMm: 5,
+  labelWidthMm: 95,
+  labelHeightMm: 55,
+  showCutLines: true
+}
+
+export const DELIVERY_LABEL_CONFIG_STORAGE_KEY = 'nail_sticker_delivery_label_config'

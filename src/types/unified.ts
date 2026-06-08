@@ -14,7 +14,11 @@ import type {
   ProductionBatch,
   QCInspectionSession,
   QCBatchStats,
-  ReworkBatch
+  ReworkBatch,
+  PrintViewMode,
+  DeliveryLabelConfig,
+  DeliveryLabelData,
+  PackingListOrderData
 } from './index'
 
 export type LayoutMode = 'normal' | 'order' | 'rework'
@@ -144,4 +148,19 @@ export interface QCActions {
   handleQCStatsChange: (stats: QCBatchStats) => void
   handleApplyReworkBatch: (batch: ReworkBatch) => void
   handleJumpToPage: (pageIndex: number) => void
+}
+
+export interface PrintViewState {
+  printViewMode: Ref<PrintViewMode>
+  deliveryLabelConfig: Ref<DeliveryLabelConfig>
+  generatedDeliveryLabels: Ref<DeliveryLabelData[]>
+  generatedPackingList: Ref<PackingListOrderData[]>
+}
+
+export interface PrintViewActions {
+  handleSetPrintViewMode: (mode: PrintViewMode) => void
+  handleUpdateDeliveryLabelConfig: (config: Partial<DeliveryLabelConfig>) => void
+  handleGenerateDeliveryLabels: (orderIds: string[]) => void
+  handleGeneratePackingList: (orderIds: string[]) => void
+  handleExportPackingListPDF: () => Promise<void>
 }

@@ -7,7 +7,8 @@ import type {
   DeliveryWarning,
   PlacedPatternWithOrder,
   QCInspectionSession,
-  QCDefectType
+  QCDefectType,
+  PrintViewMode
 } from '../types'
 import {
   getOrderStatusLabel,
@@ -26,12 +27,51 @@ const props = defineProps<{
   currentPage: number
   qcSession?: QCInspectionSession | null
   qcMode?: boolean
+  selectedOrderIds?: string[]
+  printViewMode?: PrintViewMode
 }>()
 
 const emit = defineEmits<{
   (e: 'boostPriority', orderId: string): void
   (e: 'selectOrder', orderId: string): void
+  (e: 'generateDeliveryLabels', orderIds: string[]): void
+  (e: 'generatePackingList', orderIds: string[]): void
+  (e: 'setPrintViewMode', mode: PrintViewMode): void
 }>()
+
+const allActiveOrderIds = computed(() => {
+  return props.orders
+    .filter(o => o.status === 'layout_done' || o.status === 'printed' || o.status === 'delivered')
+    .map(o => o.id)
+})
+
+const selectedIds = computed(() => props.selectedOrderIds || [])
+
+const hasSelectedOrders = computed(() => selectedIds.value.length > 0)
+
+function handleGenerateDeliveryLabels() {
+  const targetIds = hasSelectedOrders.value ? selectedIds.value : allActiveOrderIds.value
+  if (targetIds.length === 0) {
+    alert('没有可生成标签的订单（需要已排版、已打印或已交付状态）')
+    return
+  }
+  emit('generateDeliveryLabels', targetIds)
+  emit('setPrintViewMode', 'delivery_labels')
+}
+
+function handleGeneratePackingList() {
+  const targetIds = hasSelectedOrders.value ? selectedIds.value : allActiveOrderIds.value
+  if (targetIds.length === 0) {
+    alert('没有可生成清单的订单（需要已排版、已打印或已交付状态）')
+    return
+  }
+  emit('generatePackingList', targetIds)
+  emit('setPrintViewMode', 'packing_list')
+}
+
+function isOrderSelected(orderId: string): boolean {
+  return selectedIds.value.includes(orderId)
+}
 
 const activeOrders = computed(() => {
   return props.orders.filter(o => o.status !== 'delivered')
@@ -162,6 +202,38 @@ function handleBoost(warning: DeliveryWarning) {
         </div>
       </div>
 
+      <div class="mb-3 border-t border-gray-200 pt-3">
+        <div class="text-[11px] font-medium text-gray-600 mb-2">交付标签与包装清单</div>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <button
+            class="px-2 py-2 bg-primary-50 hover:bg-primary-100 text-primary-700 rounded-md text-[11px] font-medium transition-colors flex flex-col items-center gap-0.5"
+            @click="handleGenerateDeliveryLabels"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+            </svg>
+            <span>生成{{ hasSelectedOrders ? '选中' : '全部' }}标签</span>
+          </button>
+          <button
+            class="px-2 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-md text-[11px] font-medium transition-colors flex flex-col items-center gap-0.5"
+            @click="handleGeneratePackingList"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+            <span>生成{{ hasSelectedOrders ? '选中' : '全部' }}清单</span>
+          </button>
+        </div>
+        <div class="text-[10px] text-gray-500 text-center">
+          <template v-if="hasSelectedOrders">
+            已选择 {{ selectedIds.length }} 个订单
+          </template>
+          <template v-else>
+            点击订单卡片可多选
+          </template>
+        </div>
+      </div>
+
       <div class="mb-3">
         <div class="text-[11px] font-medium text-gray-600 mb-1.5">订单完成度</div>
         <div v-if="activeOrders.length === 0" class="text-[11px] text-gray-400 text-center py-2">
@@ -171,10 +243,20 @@ function handleBoost(warning: DeliveryWarning) {
           <div
             v-for="order in activeOrders"
             :key="order.id"
-            class="bg-gray-50 rounded-md p-2 cursor-pointer hover:bg-gray-100 transition-colors"
+            :class="[
+              'bg-gray-50 rounded-md p-2 cursor-pointer transition-colors',
+              isOrderSelected(order.id) ? 'bg-primary-50 ring-1 ring-primary-300' : 'hover:bg-gray-100'
+            ]"
             @click="emit('selectOrder', order.id)"
           >
             <div class="flex items-center gap-1.5 mb-1">
+              <input
+                type="checkbox"
+                :checked="isOrderSelected(order.id)"
+                class="w-3.5 h-3.5 accent-primary-500 flex-shrink-0"
+                @click.stop
+                @change="emit('selectOrder', order.id)"
+              />
               <span
                 class="w-2.5 h-2.5 rounded-sm flex-shrink-0"
                 :style="{ backgroundColor: order.colorTag }"

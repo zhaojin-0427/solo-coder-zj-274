@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
-import { A4_WIDTH_MM, A4_HEIGHT_MM } from '../data/nailConfig'
+import { A4_WIDTH_MM, A4_HEIGHT_MM, nailSizes, nailShapes } from '../data/nailConfig'
 import type {
   PrintCalibration,
   CustomerOrder,
@@ -13,10 +13,14 @@ import type {
   QCPatternCheck,
   QCOrderCheck,
   ReworkBatch,
-  UploadedPattern
+  UploadedPattern,
+  PackingListOrderData,
+  DeliveryLabelData,
+  DeliveryLabelConfig
 } from '../types'
 import { applyCalibrationWidth, applyCalibrationHeight } from './calibration'
 import { getDefectInfo, getQCStatusLabel } from './qualityControl'
+import { formatQCStatusLabel, formatQCStatusColor, paginateDeliveryLabels } from './delivery'
 
 export async function exportToPDF(
   pages: Map<number, HTMLElement>,
@@ -714,6 +718,314 @@ export async function exportQCReport(
       }
 
       y += 2
+    }
+  }
+
+  pdf.save(fileName)
+}
+
+export async function exportPackingListPDF(
+  packingList: PackingListOrderData[],
+  fileName: string = 'packing-list.pdf'
+): Promise<void> {
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  })
+
+  const pdfWidth = 210
+  const pdfHeight = 297
+  let y = 15
+
+  pdf.setFontSize(18)
+  pdf.setFont('helvetica', 'bold')
+  pdf.text('包装清单', pdfWidth / 2, y, { align: 'center' })
+  y += 6
+
+  pdf.setFontSize(10)
+  pdf.setFont('helvetica', 'normal')
+  pdf.setTextColor(100, 100, 100)
+  const now = new Date()
+  pdf.text(
+    `生成时间: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`,
+    pdfWidth / 2,
+    y,
+    { align: 'center' }
+  )
+  y += 4
+
+  const totalOrders = packingList.length
+  const totalPassed = packingList.reduce((s, o) => s + o.totalPassed, 0)
+  const totalFailed = packingList.reduce((s, o) => s + o.totalFailed, 0)
+  const deliverableCount = packingList.filter(o => o.isDeliverable).length
+
+  pdf.text(
+    `订单总数: ${totalOrders}  |  可交付: ${deliverableCount}  |  合格贴纸: ${totalPassed}  |  不合格贴纸: ${totalFailed}`,
+    pdfWidth / 2,
+    y,
+    { align: 'center' }
+  )
+  y += 8
+
+  pdf.setDrawColor(200, 200, 200)
+  pdf.setLineWidth(0.2)
+  pdf.line(15, y, pdfWidth - 15, y)
+  y += 6
+
+  for (let oi = 0; oi < packingList.length; oi++) {
+    const order = packingList[oi]
+
+    if (y > pdfHeight - 80) {
+      pdf.addPage()
+      y = 20
+    }
+
+    pdf.setFillColor(
+      parseInt(order.colorTag.slice(1, 3), 16),
+      parseInt(order.colorTag.slice(3, 5), 16),
+      parseInt(order.colorTag.slice(5, 7), 16)
+    )
+    pdf.rect(15, y - 2, 4, 4, 'F')
+
+    pdf.setFontSize(13)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(0, 0, 0)
+    pdf.text(`${oi + 1}. ${order.customerName}`, 22, y)
+
+    pdf.setFontSize(9)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(120, 120, 120)
+    pdf.text(order.orderNo, pdfWidth - 20, y, { align: 'right' })
+    y += 6
+
+    const statusColor = formatQCStatusColor(order.qcStatus)
+    pdf.setFillColor(
+      parseInt(statusColor.slice(1, 3), 16),
+      parseInt(statusColor.slice(3, 5), 16),
+      parseInt(statusColor.slice(5, 7), 16)
+    )
+    pdf.rect(22, y - 3, 2, 3, 'F')
+    pdf.setFontSize(9)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(80, 80, 80)
+
+    const infoParts = [
+      `交付日期: ${order.deliveryDate}`,
+      order.isUrgent ? '急单' : '',
+      `质检状态: ${formatQCStatusLabel(order.qcStatus)}`,
+      order.isDeliverable ? '可交付' : '不可交付'
+    ].filter(Boolean)
+    pdf.text(infoParts.join('  |  '), 26, y)
+    y += 5
+
+    pdf.text(
+      `贴纸总数: ${order.totalStickers}  |  合格: ${order.totalPassed}  |  不合格: ${order.totalFailed}  |  待检: ${order.totalPending}`,
+      22,
+      y
+    )
+    y += 6
+
+    if (y > pdfHeight - 40) {
+      pdf.addPage()
+      y = 20
+    }
+
+    pdf.setFontSize(10)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(0, 0, 0)
+    pdf.text('图案明细', 22, y)
+    y += 5
+
+    pdf.setFontSize(8)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(80, 80, 80)
+    pdf.text('图案名称', 24, y)
+    pdf.text('规格', 95, y)
+    pdf.text('数量', 130, y)
+    pdf.text('合格', 145, y)
+    pdf.text('不合格', 160, y)
+    pdf.text('状态', 180, y)
+    y += 3
+
+    pdf.setDrawColor(220, 220, 220)
+    pdf.line(22, y, pdfWidth - 15, y)
+    y += 3
+
+    pdf.setFont('helvetica', 'normal')
+    for (const item of order.items) {
+      if (y > pdfHeight - 20) {
+        pdf.addPage()
+        y = 20
+      }
+
+      const nailSizeLabel = nailSizes[item.nailSize]?.label || item.nailSize
+      const nailShapeLabel = nailShapes[item.nailShape]?.label || item.nailShape
+
+      pdf.setTextColor(0, 0, 0)
+      pdf.text(item.patternName, 24, y)
+      pdf.setTextColor(80, 80, 80)
+      pdf.text(`${nailSizeLabel}/${nailShapeLabel}`, 95, y)
+      pdf.text(String(item.quantity), 130, y)
+
+      pdf.setTextColor(34, 197, 94)
+      pdf.text(String(item.passedCount), 145, y)
+
+      pdf.setTextColor(239, 68, 68)
+      pdf.text(String(item.failedCount), 160, y)
+
+      const itemStatusColor = item.qcStatus === 'passed' ? [34, 197, 94]
+        : item.qcStatus === 'failed' ? [239, 68, 68]
+        : [245, 158, 11]
+      pdf.setTextColor(itemStatusColor[0], itemStatusColor[1], itemStatusColor[2])
+      pdf.text(item.isDeliverable ? '✓' : '✗', 180, y)
+
+      y += 4
+    }
+
+    if (order.notes) {
+      if (y > pdfHeight - 25) {
+        pdf.addPage()
+        y = 20
+      }
+      pdf.setFontSize(8)
+      pdf.setTextColor(120, 120, 120)
+      const noteLines = pdf.splitTextToSize(`备注: ${order.notes}`, pdfWidth - 40)
+      pdf.text(noteLines, 22, y)
+      y += noteLines.length * 4 + 2
+    }
+
+    y += 3
+    pdf.setDrawColor(230, 230, 230)
+    pdf.line(15, y, pdfWidth - 15, y)
+    y += 6
+  }
+
+  pdf.save(fileName)
+}
+
+export async function exportDeliveryLabelsPDF(
+  labels: DeliveryLabelData[],
+  config: DeliveryLabelConfig,
+  fileName: string = 'delivery-labels.pdf'
+): Promise<void> {
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  })
+
+  const pdfWidth = 210
+  const pdfHeight = 297
+  const pages = paginateDeliveryLabels(labels, config)
+
+  for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+    if (pageIdx > 0) {
+      pdf.addPage()
+    }
+
+    const pageLabels = pages[pageIdx]
+
+    for (let i = 0; i < pageLabels.length; i++) {
+      const label = pageLabels[i]
+      const col = i % config.columns
+      const row = Math.floor(i / config.columns)
+
+      const x = config.marginMm + col * (config.labelWidthMm + config.gapMm)
+      const y = config.marginMm + row * (config.labelHeightMm + config.gapMm)
+
+      if (config.showCutLines) {
+        pdf.setDrawColor(200, 200, 200)
+        pdf.setLineWidth(0.1)
+        pdf.setDashPattern([1, 1], 0)
+        pdf.rect(x, y, config.labelWidthMm, config.labelHeightMm, 'D')
+        pdf.setDashPattern([], 0)
+      }
+
+      pdf.setDrawColor(100, 100, 100)
+      pdf.setLineWidth(0.3)
+      pdf.rect(x + 1, y + 1, config.labelWidthMm - 2, config.labelHeightMm - 2, 'D')
+
+      let contentY = y + 6
+
+      pdf.setFillColor(
+        parseInt(label.colorTag.slice(1, 3), 16),
+        parseInt(label.colorTag.slice(3, 5), 16),
+        parseInt(label.colorTag.slice(5, 7), 16)
+      )
+      pdf.rect(x + 3, contentY - 3, 3, 3, 'F')
+
+      pdf.setFontSize(12)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setTextColor(0, 0, 0)
+      pdf.text(label.customerName, x + 8, contentY)
+
+      pdf.setFontSize(8)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(120, 120, 120)
+      pdf.text(label.orderNo, x + config.labelWidthMm - 3, contentY, { align: 'right' })
+      contentY += 6
+
+      const tagX = x + 3
+      let tagWidth = 0
+
+      if (label.isUrgent) {
+        pdf.setFillColor(239, 68, 68)
+        pdf.rect(tagX, contentY - 3, 14, 5, 'F')
+        pdf.setTextColor(255, 255, 255)
+        pdf.setFontSize(7)
+        pdf.setFont('helvetica', 'bold')
+        pdf.text('急单', tagX + 7, contentY, { align: 'center' })
+        tagWidth = 16
+      }
+
+      const statusColor = formatQCStatusColor(label.qcStatus)
+      pdf.setFillColor(
+        parseInt(statusColor.slice(1, 3), 16),
+        parseInt(statusColor.slice(3, 5), 16),
+        parseInt(statusColor.slice(5, 7), 16)
+      )
+      pdf.rect(tagX + tagWidth, contentY - 3, 22, 5, 'F')
+      pdf.setTextColor(255, 255, 255)
+      pdf.setFontSize(7)
+      pdf.setFont('helvetica', 'bold')
+      pdf.text(
+        `${formatQCStatusLabel(label.qcStatus)}${label.isDeliverable ? ' ✓' : ''}`,
+        tagX + tagWidth + 11,
+        contentY,
+        { align: 'center' }
+      )
+      contentY += 7
+
+      pdf.setFontSize(9)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(60, 60, 60)
+      pdf.text(`交付日期: ${label.deliveryDate}`, x + 3, contentY)
+      contentY += 4
+
+      pdf.text(`贴纸数量: ${label.totalStickers} 张`, x + 3, contentY)
+      contentY += 4
+
+      if (label.nailSummary) {
+        pdf.setFontSize(8)
+        pdf.setTextColor(80, 80, 80)
+        const summaryLines = pdf.splitTextToSize(
+          `规格: ${label.nailSummary}`,
+          config.labelWidthMm - 6
+        )
+        pdf.text(summaryLines, x + 3, contentY)
+        contentY += summaryLines.length * 3.5
+      }
+
+      if (label.notes) {
+        pdf.setFontSize(7)
+        pdf.setTextColor(100, 100, 100)
+        const noteLines = pdf.splitTextToSize(
+          `备注: ${label.notes}`,
+          config.labelWidthMm - 6
+        )
+        pdf.text(noteLines, x + 3, contentY)
+      }
     }
   }
 

@@ -5,7 +5,8 @@ import { useLayoutState } from './composables/useLayoutState'
 import { useOrderBatchState } from './composables/useOrderBatchState'
 import { useQualityControlState } from './composables/useQualityControlState'
 import { useExportActions } from './composables/useExportActions'
-import type { ReworkBatch, PageLayoutInfo, PlacedPattern, UploadedPattern, PatternIndependentConfig, OrderPatternItem } from './types'
+import { usePrintViewState } from './composables/usePrintViewState'
+import type { ReworkBatch, PageLayoutInfo, PlacedPattern, UploadedPattern, PatternIndependentConfig, OrderPatternItem, PrintViewMode } from './types'
 import QualityControlPanel from './components/QualityControlPanel.vue'
 import PatternUploader from './components/PatternUploader.vue'
 import PatternList from './components/PatternList.vue'
@@ -15,6 +16,8 @@ import PatternEditor from './components/PatternEditor.vue'
 import MaterialEstimatePanel from './components/MaterialEstimate.vue'
 import SchemeManager from './components/SchemeManager.vue'
 import PrintCanvas from './components/PrintCanvas.vue'
+import DeliveryLabelsCanvas from './components/DeliveryLabelsCanvas.vue'
+import PackingListCanvas from './components/PackingListCanvas.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
 import LayoutConflictPanel from './components/LayoutConflictPanel.vue'
 import OrderManager from './components/OrderManager.vue'
@@ -103,9 +106,32 @@ const exportActions = useExportActions(
   () => layout.placements.value.length
 )
 
+const printView = usePrintViewState(
+  () => orderBatch.orders.value,
+  () => layout.orderPlacements.value,
+  () => qc.qcSession.value
+)
+
 const appMode = computed<'normal' | 'order'>(() => {
   return layout.layoutMode.value === 'normal' ? 'normal' : 'order'
 })
+
+function handleSetPrintViewMode(mode: PrintViewMode) {
+  printView.handleSetPrintViewMode(mode)
+}
+
+function handleGenerateDeliveryLabels(orderIds: string[]) {
+  printView.handleGenerateDeliveryLabels(orderIds)
+}
+
+function handleGeneratePackingList(orderIds: string[]) {
+  printView.handleGeneratePackingList(orderIds)
+}
+
+const pvPrintViewMode = computed(() => printView.printViewMode.value)
+const pvDeliveryLabelConfig = computed(() => printView.deliveryLabelConfig.value)
+const pvGeneratedDeliveryLabels = computed(() => printView.generatedDeliveryLabels.value)
+const pvGeneratedPackingList = computed(() => printView.generatedPackingList.value)
 
 function setAppMode(mode: 'normal' | 'order') {
   layout.setMode(mode as LayoutMode)
@@ -277,6 +303,42 @@ function handleAddOrderItemsFromLibrary(
             />
             显示订单标签
           </label>
+
+          <div class="flex bg-gray-100 rounded-lg p-0.5">
+            <button
+              :class="[
+                'px-3 py-1.5 text-xs font-medium rounded-md transition-all',
+                pvPrintViewMode === 'stickers'
+                  ? 'bg-white text-gray-800 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              ]"
+              @click="handleSetPrintViewMode('stickers')"
+            >
+              贴纸排版
+            </button>
+            <button
+              :class="[
+                'px-3 py-1.5 text-xs font-medium rounded-md transition-all',
+                pvPrintViewMode === 'delivery_labels'
+                  ? 'bg-white text-gray-800 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              ]"
+              @click="handleSetPrintViewMode('delivery_labels')"
+            >
+              交付标签
+            </button>
+            <button
+              :class="[
+                'px-3 py-1.5 text-xs font-medium rounded-md transition-all',
+                pvPrintViewMode === 'packing_list'
+                  ? 'bg-white text-gray-800 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              ]"
+              @click="handleSetPrintViewMode('packing_list')"
+            >
+              包装清单
+            </button>
+          </div>
         </template>
 
         <button
@@ -322,20 +384,46 @@ function handleAddOrderItemsFromLibrary(
           </svg>
           打印
         </button>
-        <button
-          class="px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="expIsExporting || layoutPlacements.length === 0"
-          @click="exportActions.handleExportPDF"
-        >
-          <svg v-if="!expIsExporting" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          <svg v-else class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-          </svg>
-          {{ expIsExporting ? '导出中...' : appMode === 'order' && obSelectedOrders.length > 0 ? '导出 PDF(含分拣单)' : '导出 PDF' }}
-        </button>
+        <template v-if="appMode === 'order' && pvPrintViewMode === 'delivery_labels'">
+          <button
+            class="px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="pvGeneratedDeliveryLabels.length === 0"
+            @click="printView.handleExportDeliveryLabelsPDF"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            导出标签 PDF
+          </button>
+        </template>
+        <template v-else-if="appMode === 'order' && pvPrintViewMode === 'packing_list'">
+          <button
+            class="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="pvGeneratedPackingList.length === 0"
+            @click="printView.handleExportPackingListPDF"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            导出清单 PDF
+          </button>
+        </template>
+        <template v-else>
+          <button
+            class="px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="expIsExporting || layoutPlacements.length === 0"
+            @click="exportActions.handleExportPDF"
+          >
+            <svg v-if="!expIsExporting" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <svg v-else class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            {{ expIsExporting ? '导出中...' : appMode === 'order' && obSelectedOrders.length > 0 ? '导出 PDF(含分拣单)' : '导出 PDF' }}
+          </button>
+        </template>
       </div>
     </header>
 
@@ -487,24 +575,39 @@ function handleAddOrderItemsFromLibrary(
 
       <main class="flex-1 overflow-auto bg-gray-100 scrollbar-thin">
         <div class="h-full flex">
-          <div class="flex-1 overflow-auto">
-            <PrintCanvas
-              :placements="layoutPlacements"
-              :patterns="editorPatterns"
-              :pattern-configs="editorPatternConfigs"
-              :set-groups="editorSetGroups"
-              :selected-placement-index="editorSelectedPlacementIndex"
-              :page-info="layoutPageInfo"
-              :preview-mode="editorPreviewMode"
-              :calibration="editorCalibration"
-              :orders="appMode === 'order' ? obSelectedOrders : undefined"
-              :batch-page-info="appMode === 'order' ? layoutBatchPageInfo : undefined"
-              :show-order-tags="appMode === 'order' && obShowOrderTags"
-              :qc-session="qcSession"
-              :qc-mode="qcMode"
-              @select="layout.handlePlacementSelect"
-              @page-refs-ready="layout.handlePageRefsReady"
-            />
+          <div class="flex-1 overflow-auto print-area">
+            <template v-if="appMode !== 'order' || pvPrintViewMode === 'stickers'">
+              <PrintCanvas
+                :placements="layoutPlacements"
+                :patterns="editorPatterns"
+                :pattern-configs="editorPatternConfigs"
+                :set-groups="editorSetGroups"
+                :selected-placement-index="editorSelectedPlacementIndex"
+                :page-info="layoutPageInfo"
+                :preview-mode="editorPreviewMode"
+                :calibration="editorCalibration"
+                :orders="appMode === 'order' ? obSelectedOrders : undefined"
+                :batch-page-info="appMode === 'order' ? layoutBatchPageInfo : undefined"
+                :show-order-tags="appMode === 'order' && obShowOrderTags"
+                :qc-session="qcSession"
+                :qc-mode="qcMode"
+                @select="layout.handlePlacementSelect"
+                @page-refs-ready="layout.handlePageRefsReady"
+              />
+            </template>
+            <template v-else-if="pvPrintViewMode === 'delivery_labels'">
+              <DeliveryLabelsCanvas
+                :labels="pvGeneratedDeliveryLabels"
+                :config="pvDeliveryLabelConfig"
+                @page-refs-ready="layout.handlePageRefsReady"
+              />
+            </template>
+            <template v-else-if="pvPrintViewMode === 'packing_list'">
+              <PackingListCanvas
+                :packing-list="pvGeneratedPackingList"
+                @page-refs-ready="layout.handlePageRefsReady"
+              />
+            </template>
           </div>
 
           <template v-if="appMode === 'order' || qcMode">
@@ -518,8 +621,13 @@ function handleAddOrderItemsFromLibrary(
                 :current-page="editorCurrentPage"
                 :qc-session="qcSession"
                 :qc-mode="qcMode"
+                :selected-order-ids="obSelectedOrderIds"
+                :print-view-mode="pvPrintViewMode"
                 @boost-priority="orderBatch.handleBoostPriority"
                 @select-order="(id) => orderBatch.handleToggleSelectOrder(id)"
+                @generate-delivery-labels="handleGenerateDeliveryLabels"
+                @generate-packing-list="handleGeneratePackingList"
+                @set-print-view-mode="handleSetPrintViewMode"
               />
             </div>
           </template>
