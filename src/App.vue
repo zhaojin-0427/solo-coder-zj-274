@@ -48,6 +48,12 @@ import {
   boostOrderPriority,
   getOrderStatusLabel
 } from './utils/order'
+import type {
+  QCInspectionSession,
+  QCBatchStats,
+  ReworkBatch
+} from './types'
+import QualityControlPanel from './components/QualityControlPanel.vue'
 import PatternUploader from './components/PatternUploader.vue'
 import PatternList from './components/PatternList.vue'
 import NailSelector from './components/NailSelector.vue'
@@ -63,10 +69,13 @@ import BatchManager from './components/BatchManager.vue'
 import OrderSidebar from './components/OrderSidebar.vue'
 
 type AppMode = 'normal' | 'order'
-
 const appMode = ref<AppMode>('normal')
 const showOrderTags = ref(true)
 const currentBatchName = ref('')
+
+const qcMode = ref(false)
+const qcSession = ref<QCInspectionSession | null>(null)
+const qcStats = ref<QCBatchStats | null>(null)
 
 const patterns = ref<UploadedPattern[]>([])
 const patternConfigs = ref<Record<string, PatternIndependentConfig>>({})
@@ -457,6 +466,62 @@ async function handleExportCalibrationRuler() {
 function handlePrint() {
   window.print()
 }
+
+function handleToggleQCMode() {
+  if (!qcMode.value) {
+    if (placements.value.length === 0) {
+      alert('请先进行排版后再开始质检')
+      return
+    }
+  }
+  qcMode.value = !qcMode.value
+  if (!qcMode.value) {
+    qcSession.value = null
+    qcStats.value = null
+  }
+}
+
+function handleQCStart(session: QCInspectionSession) {
+  qcSession.value = session
+  qcMode.value = true
+}
+
+function handleQCExit() {
+  qcSession.value = null
+  qcStats.value = null
+  qcMode.value = false
+}
+
+function handleQCSessionChange(session: QCInspectionSession) {
+  qcSession.value = session
+}
+
+function handleQCStatsChange(stats: QCBatchStats) {
+  qcStats.value = stats
+}
+
+function handleApplyReworkBatch(batch: ReworkBatch) {
+  if (batch.placements.length > 0) {
+    orderLayoutResult.value = {
+      placements: batch.placements,
+      conflicts: [],
+      pageInfo: batch.pageInfo,
+      orderProgress: {},
+      batchPageInfo: [],
+      deliveryWarnings: []
+    }
+    layoutSettings.value = batch.settings
+    calibration.value = batch.calibration
+    currentBatchName.value = batch.name
+    qcMode.value = false
+    qcSession.value = null
+    qcStats.value = null
+  }
+}
+
+function handleJumpToPage(pageIndex: number) {
+  currentPage.value = pageIndex
+}
 </script>
 
 <template>
@@ -512,6 +577,22 @@ function handlePrint() {
         </template>
 
         <button
+          :class="[
+            'px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2',
+            qcMode
+              ? 'bg-purple-600 hover:bg-purple-700 text-white'
+              : 'bg-purple-50 hover:bg-purple-100 text-purple-700'
+          ]"
+          title="打印质检与返工追踪"
+          @click="handleToggleQCMode"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          {{ qcMode ? '质检模式' : '质检与返工' }}
+        </button>
+
+        <button
           class="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
           title="打印校准尺"
           @click="handleExportCalibrationRuler"
@@ -557,7 +638,27 @@ function handlePrint() {
 
     <div class="flex-1 flex overflow-hidden">
       <aside class="w-80 bg-white border-r border-gray-200 overflow-y-auto scrollbar-thin flex-shrink-0">
-        <template v-if="appMode === 'normal'">
+        <template v-if="qcMode">
+          <QualityControlPanel
+            :placements="placements"
+            :patterns="patterns"
+            :orders="orders"
+            :selected-order-ids="selectedOrderIds"
+            :current-batch-name="currentBatchName"
+            :app-mode="appMode"
+            :selected-placement-index="selectedPlacementIndex"
+            :layout-settings="layoutSettings"
+            :calibration="calibration"
+            @update:selected-placement-index="selectedPlacementIndex = $event"
+            @start-qc="handleQCStart"
+            @exit-qc="handleQCExit"
+            @apply-rework-batch="handleApplyReworkBatch"
+            @session-change="handleQCSessionChange"
+            @stats-change="handleQCStatsChange"
+            @jump-to-page="handleJumpToPage"
+          />
+        </template>
+        <template v-else-if="appMode === 'normal'">
           <PatternUploader @upload="handlePatternUpload" />
           <PatternList
             :patterns="patterns"
@@ -678,12 +779,14 @@ function handlePrint() {
               :orders="appMode === 'order' ? selectedOrders : undefined"
               :batch-page-info="appMode === 'order' ? batchPageInfo : undefined"
               :show-order-tags="appMode === 'order' && showOrderTags"
+              :qc-session="qcSession"
+              :qc-mode="qcMode"
               @select="handlePlacementSelect"
               @page-refs-ready="handlePageRefsReady"
             />
           </div>
 
-          <template v-if="appMode === 'order'">
+          <template v-if="appMode === 'order' || qcMode">
             <div class="w-72 bg-white border-l border-gray-200 overflow-y-auto scrollbar-thin flex-shrink-0">
               <OrderSidebar
                 :orders="selectedOrders"
@@ -692,6 +795,8 @@ function handlePrint() {
                 :batch-page-info="batchPageInfo"
                 :delivery-warnings="deliveryWarnings"
                 :current-page="currentPage"
+                :qc-session="qcSession"
+                :qc-mode="qcMode"
                 @boost-priority="handleBoostPriority"
                 @select-order="(id) => handleToggleSelectOrder(id)"
               />

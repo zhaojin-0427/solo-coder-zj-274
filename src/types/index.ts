@@ -223,3 +223,120 @@ export interface OrderLayoutResult extends LayoutResult {
   batchPageInfo: PageBatchInfo[]
   deliveryWarnings: DeliveryWarning[]
 }
+
+export type QCDefectType =
+  | 'color_deviation'
+  | 'size_deviation'
+  | 'missing_print'
+  | 'cutting_risk'
+  | 'sticker_damaged'
+  | 'label_unclear'
+  | 'other'
+
+export interface QCDefectTypeInfo {
+  type: QCDefectType
+  label: string
+  color: string
+  icon: string
+}
+
+export type QCItemStatus = 'pending' | 'passed' | 'failed'
+
+export interface QCPatternCheck {
+  placementGlobalIndex: number
+  patternId: string
+  pageIndex: number
+  orderId: string | null
+  orderItemId: string | null
+  status: QCItemStatus
+  defects: QCDefectType[]
+  notes: string
+  checkedAt: number | null
+}
+
+export interface QCPageCheck {
+  pageIndex: number
+  status: QCItemStatus
+  defects: QCDefectType[]
+  notes: string
+  checkedAt: number | null
+  patternChecks: Record<number, QCPatternCheck>
+}
+
+export interface QCOrderCheck {
+  orderId: string
+  status: QCItemStatus
+  defectCounts: Record<QCDefectType, number>
+  totalItems: number
+  checkedItems: number
+  passedItems: number
+  failedItems: number
+  notes: string
+}
+
+export interface QCBatchStats {
+  totalPages: number
+  checkedPages: number
+  passedPages: number
+  failedPages: number
+  totalPatterns: number
+  checkedPatterns: number
+  passedPatterns: number
+  failedPatterns: number
+  passRate: number
+  affectedOrderIds: string[]
+  estimatedReprintPages: number
+  extraMaterialCost: number
+  defectBreakdown: Record<QCDefectType, number>
+}
+
+export interface QCInspectionSession {
+  id: string
+  batchId: string | null
+  batchName: string
+  sourceType: 'normal' | 'order'
+  createdAt: number
+  updatedAt: number
+  pageChecks: Record<number, QCPageCheck>
+  orderChecks: Record<string, QCOrderCheck>
+  isCompleted: boolean
+  completedAt: number | null
+}
+
+export interface ReworkBatch {
+  id: string
+  name: string
+  sourceSessionId: string
+  sourceBatchId: string | null
+  createdAt: number
+  reworkItems: Array<{
+    patternId: string
+    orderId: string | null
+    orderItemId: string | null
+    quantity: number
+    nailSize: NailSize
+    nailShape: NailShape
+    defects: QCDefectType[]
+  }>
+  placements: PlacedPatternWithOrder[]
+  pageInfo: PageLayoutInfo[]
+  settings: LayoutSettings
+  calibration: PrintCalibration
+  isGenerated: boolean
+}
+
+export interface ReworkItemInput {
+  patternId: string
+  patternName: string
+  nailSize: NailSize
+  nailShape: NailShape
+  orderId: string | null
+  orderItemId: string | null
+  quantity: number
+}
+
+export interface QCMaterialCostConfig {
+  a4SheetCost: number
+  inkCostPerPage: number
+  laborCostPerSheet: number
+}

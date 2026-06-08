@@ -5,7 +5,9 @@ import type {
   OrderLayoutProgress,
   PageBatchInfo,
   DeliveryWarning,
-  PlacedPatternWithOrder
+  PlacedPatternWithOrder,
+  QCInspectionSession,
+  QCDefectType
 } from '../types'
 import {
   getOrderStatusLabel,
@@ -13,6 +15,7 @@ import {
   getDaysRemaining,
   estimateSortingTime
 } from '../utils/order'
+import { isOrderDeliverable, getDefectInfo } from '../utils/qualityControl'
 
 const props = defineProps<{
   orders: CustomerOrder[]
@@ -21,6 +24,8 @@ const props = defineProps<{
   batchPageInfo: PageBatchInfo[]
   deliveryWarnings: DeliveryWarning[]
   currentPage: number
+  qcSession?: QCInspectionSession | null
+  qcMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -175,9 +180,21 @@ function handleBoost(warning: DeliveryWarning) {
                 :style="{ backgroundColor: order.colorTag }"
               ></span>
               <span class="text-[11px] font-medium text-gray-800 flex-1 truncate">{{ order.customerName }}</span>
-              <span :class="['text-[9px] px-1 rounded', getOrderStatusColor(order.status)]">
-                {{ getOrderStatusLabel(order.status) }}
-              </span>
+              <template v-if="qcMode && qcSession">
+                <span
+                  v-if="isOrderDeliverable(qcSession, order.id).deliverable"
+                  class="text-[9px] px-1 bg-green-100 text-green-700 rounded"
+                >可交付</span>
+                <span
+                  v-else
+                  class="text-[9px] px-1 bg-red-100 text-red-700 rounded"
+                >不可交付</span>
+              </template>
+              <template v-else>
+                <span :class="['text-[9px] px-1 rounded', getOrderStatusColor(order.status)]">
+                  {{ getOrderStatusLabel(order.status) }}
+                </span>
+              </template>
             </div>
             <div class="flex items-center gap-1.5 mb-1">
               <div class="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
@@ -190,6 +207,35 @@ function handleBoost(warning: DeliveryWarning) {
                 {{ orderProgress[order.id]?.completionPercent || 0 }}%
               </span>
             </div>
+            <template v-if="qcMode && qcSession && qcSession.orderChecks[order.id]">
+              <div class="flex items-center gap-1.5 mb-1">
+                <div class="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    class="h-full rounded-full transition-all"
+                    :class="qcSession.orderChecks[order.id].status === 'passed' ? 'bg-green-500' : qcSession.orderChecks[order.id].failedItems > 0 ? 'bg-red-500' : 'bg-amber-500'"
+                    :style="{ width: `${qcSession.orderChecks[order.id].totalItems > 0 ? (qcSession.orderChecks[order.id].checkedItems / qcSession.orderChecks[order.id].totalItems) * 100 : 0}%` }"
+                  ></div>
+                </div>
+                <span class="text-[10px] text-gray-600 w-16 text-right">
+                  质检 {{ qcSession.orderChecks[order.id].checkedItems }}/{{ qcSession.orderChecks[order.id].totalItems }}
+                </span>
+              </div>
+              <div v-if="Object.entries(qcSession.orderChecks[order.id].defectCounts).filter(([,c]) => c > 0).length > 0" class="mb-1">
+                <div class="flex flex-wrap gap-0.5">
+                  <span
+                    v-for="[type, count] in Object.entries(qcSession.orderChecks[order.id].defectCounts).filter(([,c]) => c > 0)"
+                    :key="type"
+                    class="text-[8px] px-1 rounded"
+                    :style="{ backgroundColor: getDefectInfo(type as QCDefectType).color + '25', color: getDefectInfo(type as QCDefectType).color }"
+                  >
+                    {{ getDefectInfo(type as QCDefectType).label }}×{{ count }}
+                  </span>
+                </div>
+              </div>
+              <div class="text-[9px]" :class="isOrderDeliverable(qcSession, order.id).deliverable ? 'text-green-600' : 'text-red-600'">
+                {{ isOrderDeliverable(qcSession, order.id).reason }}
+              </div>
+            </template>
             <div class="flex items-center justify-between text-[10px] text-gray-500">
               <span>
                 {{ orderProgress[order.id]?.placedItems || 0 }}/{{ orderProgress[order.id]?.totalItems || 0 }} 张

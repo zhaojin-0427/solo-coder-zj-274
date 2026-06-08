@@ -1,8 +1,22 @@
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 import { A4_WIDTH_MM, A4_HEIGHT_MM } from '../data/nailConfig'
-import type { PrintCalibration, CustomerOrder, PlacedPatternWithOrder, OrderLayoutProgress } from '../types'
+import type {
+  PrintCalibration,
+  CustomerOrder,
+  PlacedPatternWithOrder,
+  OrderLayoutProgress,
+  QCInspectionSession,
+  QCBatchStats,
+  QCDefectType,
+  QCPageCheck,
+  QCPatternCheck,
+  QCOrderCheck,
+  ReworkBatch,
+  UploadedPattern
+} from '../types'
 import { applyCalibrationWidth, applyCalibrationHeight } from './calibration'
+import { getDefectInfo, getQCStatusLabel } from './qualityControl'
 
 export async function exportToPDF(
   pages: Map<number, HTMLElement>,
@@ -345,6 +359,363 @@ export async function exportCalibrationRulerPDF(
 
   pdf.setFontSize(8)
   pdf.text('提示：测量后在"校准设置"面板输入实测值，系统会自动补偿打印缩放误差', 105, 285, { align: 'center' })
+
+  pdf.save(fileName)
+}
+
+export async function exportQCReport(
+  session: QCInspectionSession,
+  stats: QCBatchStats,
+  orders: CustomerOrder[],
+  patterns: UploadedPattern[],
+  placements: PlacedPatternWithOrder[],
+  reworkBatch: ReworkBatch | null,
+  fileName: string = 'qc-report.pdf'
+): Promise<void> {
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  })
+
+  const pdfWidth = 210
+  const pdfHeight = 297
+  let y = 15
+
+  pdf.setFontSize(18)
+  pdf.setFont('helvetica', 'bold')
+  pdf.text('质检报告', pdfWidth / 2, y, { align: 'center' })
+  y += 6
+
+  pdf.setFontSize(10)
+  pdf.setFont('helvetica', 'normal')
+  pdf.setTextColor(100, 100, 100)
+  const now = new Date()
+  pdf.text(
+    `生成时间: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`,
+    pdfWidth / 2,
+    y,
+    { align: 'center' }
+  )
+  y += 4
+  pdf.text(`质检批次: ${session.batchName}`, pdfWidth / 2, y, { align: 'center' })
+  y += 8
+
+  pdf.setDrawColor(200, 200, 200)
+  pdf.setLineWidth(0.2)
+  pdf.line(15, y, pdfWidth - 15, y)
+  y += 6
+
+  pdf.setFontSize(12)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setTextColor(0, 0, 0)
+  pdf.text('质检统计概览', 15, y)
+  y += 6
+
+  const statsData = [
+    ['总页数', stats.totalPages.toString()],
+    ['已检页数', `${stats.checkedPages} (${stats.totalPages > 0 ? Math.round(stats.checkedPages / stats.totalPages * 100) : 0}%)`],
+    ['合格页数', stats.passedPages.toString()],
+    ['不合格页数', stats.failedPages.toString()],
+    ['总贴纸数', stats.totalPatterns.toString()],
+    ['合格率', `${stats.passRate.toFixed(1)}%`],
+    ['受影响订单数', stats.affectedOrderIds.length.toString()],
+    ['预计补打页数', stats.estimatedReprintPages.toString()],
+    ['额外耗材成本', `¥${stats.extraMaterialCost.toFixed(2)}`]
+  ]
+
+  pdf.setFontSize(9)
+  pdf.setFont('helvetica', 'normal')
+  for (let i = 0; i < statsData.length; i += 2) {
+    if (y > pdfHeight - 30) {
+      pdf.addPage()
+      y = 20
+    }
+    const left = statsData[i]
+    const right = statsData[i + 1]
+    pdf.setTextColor(100, 100, 100)
+    pdf.text(left[0], 20, y)
+    pdf.setTextColor(0, 0, 0)
+    pdf.setFont('helvetica', 'bold')
+    pdf.text(left[1], 70, y)
+    pdf.setFont('helvetica', 'normal')
+    if (right) {
+      pdf.setTextColor(100, 100, 100)
+      pdf.text(right[0], 115, y)
+      pdf.setTextColor(0, 0, 0)
+      pdf.setFont('helvetica', 'bold')
+      pdf.text(right[1], 165, y)
+      pdf.setFont('helvetica', 'normal')
+    }
+    y += 5
+  }
+  y += 3
+
+  pdf.setDrawColor(230, 230, 230)
+  pdf.line(15, y, pdfWidth - 15, y)
+  y += 5
+
+  pdf.setFontSize(12)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setTextColor(0, 0, 0)
+  pdf.text('问题分布', 15, y)
+  y += 6
+
+  pdf.setFontSize(9)
+  pdf.setFont('helvetica', 'normal')
+  let maxDefectCount = 0
+  for (const count of Object.values(stats.defectBreakdown)) {
+    if (count > maxDefectCount) maxDefectCount = count
+  }
+  for (const [defectType, count] of Object.entries(stats.defectBreakdown)) {
+    if (y > pdfHeight - 20) {
+      pdf.addPage()
+      y = 20
+    }
+    const info = getDefectInfo(defectType as QCDefectType)
+    const pct = maxDefectCount > 0 ? (count / maxDefectCount) * 60 : 0
+    pdf.setTextColor(0, 0, 0)
+    pdf.text(`${info.label} (${count})`, 20, y)
+    const barX = 70
+    const barHeight = 3
+    pdf.setDrawColor(220, 220, 220)
+    pdf.rect(barX, y - 2, 60, barHeight, 'D')
+    if (count > 0) {
+      const hexColor = info.color.replace('#', '')
+      pdf.setFillColor(
+        parseInt(hexColor.slice(0, 2), 16),
+        parseInt(hexColor.slice(2, 4), 16),
+        parseInt(hexColor.slice(4, 6), 16)
+      )
+      pdf.rect(barX, y - 2, pct, barHeight, 'F')
+    }
+    y += 5
+  }
+  y += 3
+
+  pdf.addPage()
+  y = 15
+
+  pdf.setFontSize(14)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setTextColor(0, 0, 0)
+  pdf.text('质检清单 - 分页详情', pdfWidth / 2, y, { align: 'center' })
+  y += 10
+
+  const pageChecks = Object.values(session.pageChecks).sort((a, b) => a.pageIndex - b.pageIndex)
+  for (const pageCheck of pageChecks) {
+    if (y > pdfHeight - 40) {
+      pdf.addPage()
+      y = 20
+    }
+
+    pdf.setFontSize(11)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(0, 0, 0)
+    pdf.text(`第 ${pageCheck.pageIndex + 1} 页`, 15, y)
+
+    const statusColor = pageCheck.status === 'passed' ? [34, 197, 94]
+      : pageCheck.status === 'failed' ? [239, 68, 68]
+      : [156, 163, 175]
+    pdf.setFillColor(statusColor[0], statusColor[1], statusColor[2])
+    pdf.setTextColor(255, 255, 255)
+    pdf.setFontSize(8)
+    pdf.text(` ${getQCStatusLabel(pageCheck.status)} `, 50, y + 0.5)
+    y += 6
+
+    if (pageCheck.defects.length > 0) {
+      pdf.setFontSize(8)
+      pdf.setTextColor(239, 68, 68)
+      pdf.setFont('helvetica', 'normal')
+      const defectLabels = pageCheck.defects.map(d => getDefectInfo(d).label).join('、')
+      pdf.text(`问题类型: ${defectLabels}`, 20, y)
+      y += 4
+    }
+
+    const patternChecks = Object.values(pageCheck.patternChecks)
+    if (patternChecks.length > 0) {
+      pdf.setFontSize(8)
+      pdf.setTextColor(80, 80, 80)
+      pdf.text(`贴纸明细 (${patternChecks.length} 张):`, 20, y)
+      y += 4
+
+      for (const pc of patternChecks) {
+        if (y > pdfHeight - 15) {
+          pdf.addPage()
+          y = 20
+        }
+        const pattern = patterns.find(p => p.id === pc.patternId)
+        const patternName = pattern?.name || '未知图案'
+        const pStatus = pc.status === 'passed' ? '✓'
+          : pc.status === 'failed' ? '✗'
+          : '○'
+        const pColor = pc.status === 'passed' ? [34, 197, 94]
+          : pc.status === 'failed' ? [239, 68, 68]
+          : [156, 163, 175]
+        pdf.setTextColor(pColor[0], pColor[1], pColor[2])
+        pdf.setFontSize(8)
+        const pDefects = pc.defects.length > 0
+          ? ` [${pc.defects.map(d => getDefectInfo(d).label).join(',')}]`
+          : ''
+        pdf.text(`  ${pStatus} ${patternName}${pDefects}`, 24, y)
+        y += 4
+      }
+    }
+
+    if (pageCheck.notes) {
+      if (y > pdfHeight - 15) {
+        pdf.addPage()
+        y = 20
+      }
+      pdf.setFontSize(8)
+      pdf.setTextColor(120, 120, 120)
+      const noteLines = pdf.splitTextToSize(`备注: ${pageCheck.notes}`, pdfWidth - 40)
+      pdf.text(noteLines, 20, y)
+      y += noteLines.length * 4 + 2
+    }
+
+    y += 2
+    pdf.setDrawColor(235, 235, 235)
+    pdf.line(15, y, pdfWidth - 15, y)
+    y += 4
+  }
+
+  pdf.addPage()
+  y = 15
+
+  pdf.setFontSize(14)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setTextColor(0, 0, 0)
+  pdf.text('受影响订单摘要', pdfWidth / 2, y, { align: 'center' })
+  y += 10
+
+  if (stats.affectedOrderIds.length === 0) {
+    pdf.setFontSize(10)
+    pdf.setTextColor(34, 197, 94)
+    pdf.setFont('helvetica', 'normal')
+    pdf.text('🎉 所有订单质检合格，无受影响订单', pdfWidth / 2, y, { align: 'center' })
+  } else {
+    for (const oid of stats.affectedOrderIds) {
+      if (y > pdfHeight - 40) {
+        pdf.addPage()
+        y = 20
+      }
+      const order = orders.find(o => o.id === oid)
+      const orderCheck = session.orderChecks[oid]
+      if (!order) continue
+
+      pdf.setFillColor(
+        parseInt(order.colorTag.slice(1, 3), 16),
+        parseInt(order.colorTag.slice(3, 5), 16),
+        parseInt(order.colorTag.slice(5, 7), 16)
+      )
+      pdf.rect(15, y - 3, 4, 4, 'F')
+
+      pdf.setFontSize(11)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setTextColor(0, 0, 0)
+      pdf.text(order.customerName, 22, y)
+
+      pdf.setFontSize(8)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(120, 120, 120)
+      pdf.text(order.orderNo, pdfWidth - 30, y, { align: 'right' })
+      y += 5
+
+      pdf.setFontSize(9)
+      pdf.setTextColor(80, 80, 80)
+      const infoParts = [
+        `交付日期: ${order.deliveryDate}`,
+        order.isUrgent ? '急单' : ''
+      ].filter(Boolean)
+      pdf.text(infoParts.join('  |  '), 22, y)
+      y += 4
+
+      if (orderCheck) {
+        pdf.setTextColor(0, 0, 0)
+        pdf.text(`质检进度: ${orderCheck.checkedItems}/${orderCheck.totalItems}  合格:${orderCheck.passedItems}  不合格:${orderCheck.failedItems}`, 22, y)
+        y += 4
+
+        const defectEntries = Object.entries(orderCheck.defectCounts).filter(([, c]) => c > 0)
+        if (defectEntries.length > 0) {
+          pdf.setTextColor(239, 68, 68)
+          pdf.setFontSize(8)
+          const dText = defectEntries.map(([t, c]) => `${getDefectInfo(t as QCDefectType).label}×${c}`).join('，')
+          pdf.text(`问题: ${dText}`, 24, y)
+          y += 4
+        }
+      }
+
+      y += 2
+      pdf.setDrawColor(230, 230, 230)
+      pdf.line(15, y, pdfWidth - 15, y)
+      y += 5
+    }
+  }
+
+  if (reworkBatch && reworkBatch.reworkItems.length > 0) {
+    pdf.addPage()
+    y = 15
+
+    pdf.setFontSize(14)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(0, 0, 0)
+    pdf.text('返工清单', pdfWidth / 2, y, { align: 'center' })
+    y += 6
+
+    pdf.setFontSize(9)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(100, 100, 100)
+    pdf.text(`返工批次: ${reworkBatch.name}`, pdfWidth / 2, y, { align: 'center' })
+    y += 8
+
+    pdf.setDrawColor(200, 200, 200)
+    pdf.line(15, y, pdfWidth - 15, y)
+    y += 6
+
+    pdf.setFontSize(10)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(0, 0, 0)
+    pdf.text('共需返工 ' + reworkBatch.reworkItems.length + ' 项图案', 15, y)
+    y += 7
+
+    for (let ri = 0; ri < reworkBatch.reworkItems.length; ri++) {
+      if (y > pdfHeight - 20) {
+        pdf.addPage()
+        y = 20
+      }
+      const item = reworkBatch.reworkItems[ri]
+      const pattern = patterns.find(p => p.id === item.patternId)
+      const patternName = pattern?.name || '未知图案'
+      const order = orders.find(o => o.id === item.orderId)
+
+      pdf.setFontSize(9)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setTextColor(0, 0, 0)
+      pdf.text(`${ri + 1}. ${patternName}`, 20, y)
+      y += 4
+
+      pdf.setFontSize(8)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(80, 80, 80)
+      const metaParts = [
+        `规格: ${item.nailSize}/${item.nailShape}`,
+        `数量: ${item.quantity}张`,
+        order ? `订单: ${order.customerName}` : ''
+      ].filter(Boolean)
+      pdf.text(metaParts.join('  |  '), 24, y)
+      y += 4
+
+      if (item.defects.length > 0) {
+        pdf.setTextColor(239, 68, 68)
+        const dText = item.defects.map(d => getDefectInfo(d).label).join('、')
+        pdf.text(`问题类型: ${dText}`, 24, y)
+        y += 4
+      }
+
+      y += 2
+    }
+  }
 
   pdf.save(fileName)
 }

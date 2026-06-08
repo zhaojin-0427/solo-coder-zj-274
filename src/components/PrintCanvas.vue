@@ -10,9 +10,13 @@ import type {
   PrintCalibration,
   PlacedPatternWithOrder,
   CustomerOrder,
-  PageBatchInfo
+  PageBatchInfo,
+  QCInspectionSession,
+  QCItemStatus,
+  QCDefectType
 } from '../types'
 import { getNailClipPath } from '../data/nailConfig'
+import { getDefectInfo } from '../utils/qualityControl'
 
 const props = defineProps<{
   placements: PlacedPattern[]
@@ -26,6 +30,8 @@ const props = defineProps<{
   orders?: CustomerOrder[]
   batchPageInfo?: PageBatchInfo[]
   showOrderTags?: boolean
+  qcSession?: QCInspectionSession | null
+  qcMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -166,6 +172,33 @@ function getRiskColorClass(level: 'low' | 'medium' | 'high'): string {
   const map = { low: 'text-green-600', medium: 'text-amber-600', high: 'text-red-600' }
   return map[level]
 }
+
+function getPatternQCStatus(placement: PlacedPattern, globalIdx: number): QCItemStatus | null {
+  if (!props.qcSession) return null
+  const pageCheck = props.qcSession.pageChecks[placement.pageIndex]
+  if (!pageCheck) return null
+  const pc = pageCheck.patternChecks[globalIdx]
+  return pc ? pc.status : null
+}
+
+function getPatternQCDetails(placement: PlacedPattern, globalIdx: number): { defects: QCDefectType[]; notes: string } | null {
+  if (!props.qcSession) return null
+  const pageCheck = props.qcSession.pageChecks[placement.pageIndex]
+  if (!pageCheck) return null
+  const pc = pageCheck.patternChecks[globalIdx]
+  return pc ? { defects: pc.defects, notes: pc.notes } : null
+}
+
+function getPageQCStatus(pageIdx: number): QCItemStatus | null {
+  if (!props.qcSession) return null
+  return props.qcSession.pageChecks[pageIdx]?.status || null
+}
+
+function getPageQCDetails(pageIdx: number): { defects: QCDefectType[]; notes: string } | null {
+  if (!props.qcSession) return null
+  const pc = props.qcSession.pageChecks[pageIdx]
+  return pc ? { defects: pc.defects, notes: pc.notes } : null
+}
 </script>
 
 <template>
@@ -185,6 +218,21 @@ function getRiskColorClass(level: 'low' | 'medium' | 'high'): string {
       >
         <div class="text-center text-xs text-gray-500 mb-2">
           <span class="font-medium">第 {{ pageIdx + 1 }} 页</span>
+          <template v-if="qcMode && getPageQCStatus(pageIdx)">
+            <span class="mx-1">·</span>
+            <span
+              :class="[
+                'px-1.5 py-0.5 rounded text-[10px] font-medium',
+                getPageQCStatus(pageIdx) === 'passed'
+                  ? 'bg-green-100 text-green-700'
+                  : getPageQCStatus(pageIdx) === 'failed'
+                  ? 'bg-red-100 text-red-700'
+                  : 'bg-gray-100 text-gray-600'
+              ]"
+            >
+              {{ getPageQCStatus(pageIdx) === 'passed' ? '质检合格' : getPageQCStatus(pageIdx) === 'failed' ? '质检不合格' : '质检中' }}
+            </span>
+          </template>
           <template v-if="pageInfoByIndex.get(pageIdx)">
             <span class="mx-1">·</span>
             <span class="text-gray-600">
@@ -206,6 +254,18 @@ function getRiskColorClass(level: 'low' | 'medium' | 'high'): string {
             <span :class="getRiskColorClass(batchPageInfoByIndex.get(pageIdx)!.riskLevel)">
               {{ getRiskLabel(batchPageInfoByIndex.get(pageIdx)!.riskLevel) }}
             </span>
+          </template>
+          <template v-if="qcMode && getPageQCDetails(pageIdx)?.defects && getPageQCDetails(pageIdx)!.defects.length > 0">
+            <div class="mt-1 flex flex-wrap justify-center gap-1">
+              <span
+                v-for="d in getPageQCDetails(pageIdx)!.defects"
+                :key="d"
+                class="inline-flex items-center px-1 py-0.5 text-[9px] rounded"
+                :style="{ backgroundColor: getDefectInfo(d).color + '25', color: getDefectInfo(d).color }"
+              >
+                {{ getDefectInfo(d).icon }} {{ getDefectInfo(d).label }}
+              </span>
+            </div>
           </template>
         </div>
         <div
@@ -230,7 +290,13 @@ function getRiskColorClass(level: 'low' | 'medium' | 'high'): string {
             :key="getGlobalIndex(placement)"
             :class="[
               'nail-pattern',
-              selectedPlacementIndex === getGlobalIndex(placement) && !previewMode ? 'selected' : ''
+              selectedPlacementIndex === getGlobalIndex(placement) && !previewMode ? 'selected' : '',
+              qcMode && getPatternQCStatus(placement, getGlobalIndex(placement)) === 'passed'
+                ? 'qc-passed'
+                : '',
+              qcMode && getPatternQCStatus(placement, getGlobalIndex(placement)) === 'failed'
+                ? 'qc-failed'
+                : ''
             ]"
             :style="{
               left: `${placement.x}mm`,
@@ -239,7 +305,11 @@ function getRiskColorClass(level: 'low' | 'medium' | 'high'): string {
               height: `${placement.height}mm`,
               clipPath: getNailClipPath(placement.nailShape as NailShape),
               borderRadius: placement.nailShape === 'round' || placement.nailShape === 'oval' ? '50%' : undefined,
-              boxShadow: getPlacementOrderInfo(placement).orderColorTag
+              boxShadow: qcMode && getPatternQCStatus(placement, getGlobalIndex(placement)) === 'passed'
+                ? '0 0 0 2px #22C55E, inset 0 0 0 0.5px rgba(255,255,255,0.5)'
+                : qcMode && getPatternQCStatus(placement, getGlobalIndex(placement)) === 'failed'
+                ? '0 0 0 2px #EF4444, inset 0 0 0 0.5px rgba(255,255,255,0.5)'
+                : getPlacementOrderInfo(placement).orderColorTag
                 ? `0 0 0 1.5px ${getPlacementOrderInfo(placement).orderColorTag}, inset 0 0 0 0.5px rgba(255,255,255,0.5)`
                 : getGroupById(placement.setGroupId)
                 ? `0 0 0 1px ${getGroupById(placement.setGroupId)!.color}`
@@ -247,6 +317,30 @@ function getRiskColorClass(level: 'low' | 'medium' | 'high'): string {
             }"
             @click.stop="emit('select', getGlobalIndex(placement))"
           >
+            <template v-if="qcMode && getPatternQCStatus(placement, getGlobalIndex(placement)) === 'passed'">
+              <div class="absolute inset-0 bg-green-500/15 pointer-events-none flex items-center justify-center z-10">
+                <span class="text-green-600 text-[14px] font-bold drop-shadow">✓</span>
+              </div>
+            </template>
+            <template v-else-if="qcMode && getPatternQCStatus(placement, getGlobalIndex(placement)) === 'failed'">
+              <div class="absolute inset-0 bg-red-500/15 pointer-events-none flex items-center justify-center z-10">
+                <span class="text-red-600 text-[14px] font-bold drop-shadow">✗</span>
+              </div>
+              <div
+                v-if="getPatternQCDetails(placement, getGlobalIndex(placement))?.defects && getPatternQCDetails(placement, getGlobalIndex(placement))!.defects.length > 0"
+                class="absolute -top-0.5 -right-0.5 flex flex-col gap-0.5 items-end z-20 pointer-events-none"
+              >
+                <span
+                  v-for="(d, i) in getPatternQCDetails(placement, getGlobalIndex(placement))!.defects.slice(0, 3)"
+                  :key="d"
+                  class="text-[8px] leading-none px-0.5 py-px rounded"
+                  :style="{ backgroundColor: getDefectInfo(d).color, color: '#fff' }"
+                  :title="getDefectInfo(d).label"
+                >
+                  {{ getDefectInfo(d).icon }}
+                </span>
+              </div>
+            </template>
             <div
               v-if="getPlacementOrderInfo(placement).orderColorTag"
               class="absolute -top-0.5 -left-0.5 w-3 h-3 rounded-sm border border-white shadow-sm flex items-center justify-center"
