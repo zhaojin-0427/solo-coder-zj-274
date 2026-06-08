@@ -75,6 +75,7 @@ export function useLayoutState(
   const currentPage = ref(0)
 
   const layoutMode = ref<LayoutMode>('normal')
+  const skipNextRecalc = ref(false)
 
   const layoutResult = ref<LayoutResult>({ placements: [], conflicts: [], pageInfo: [] })
   const orderLayoutResult = ref<OrderLayoutResult>({
@@ -101,6 +102,10 @@ export function useLayoutState(
   watch(
     [patterns, patternConfigs, layoutSettings, calibration, () => layoutMode.value],
     () => {
+      if (skipNextRecalc.value) {
+        skipNextRecalc.value = false
+        return
+      }
       if (layoutMode.value === 'normal') {
         const preserved = new Map<string, PatternTransform>()
         for (const pl of layoutResult.value.placements) {
@@ -136,6 +141,10 @@ export function useLayoutState(
       () => layoutMode.value
     ],
     () => {
+      if (skipNextRecalc.value) {
+        skipNextRecalc.value = false
+        return
+      }
       if (layoutMode.value === 'order' || layoutMode.value === 'rework') {
         const orders = getOrders()
         const selectedOrderIds = getSelectedOrderIds()
@@ -370,6 +379,7 @@ export function useLayoutState(
   }
 
   function applyReworkPlacements(batchPlacements: PlacedPatternWithOrder[], batchPageInfoData: PageLayoutInfo[]) {
+    skipNextRecalc.value = true
     orderLayoutResult.value = {
       placements: batchPlacements,
       conflicts: [],
@@ -381,6 +391,7 @@ export function useLayoutState(
   }
 
   function applyNormalPlacements(normalPlacements: PlacedPattern[], normalPageInfo: PageLayoutInfo[]) {
+    skipNextRecalc.value = true
     layoutResult.value = {
       placements: normalPlacements,
       conflicts: [],

@@ -121,7 +121,10 @@ const editorPatterns = computed(() => layout.editor.patterns.value)
 const editorPatternConfigs = computed(() => layout.editor.patternConfigs.value)
 const editorSetGroups = computed(() => layout.editor.setGroups.value)
 const editorSelectedPlacementIndex = computed(() => layout.editor.selectedPlacementIndex.value)
-const editorPreviewMode = computed(() => layout.editor.previewMode.value)
+const editorPreviewMode = computed({
+  get: () => layout.editor.previewMode.value,
+  set: (v: boolean) => { layout.editor.previewMode.value = v }
+})
 const editorCurrentPage = computed(() => layout.editor.currentPage.value)
 
 const layoutPlacements = computed(() => layout.placements.value)
@@ -138,7 +141,10 @@ const layoutLayoutMode = computed(() => layout.layoutMode.value)
 const obOrders = computed(() => orderBatch.orders.value)
 const obSelectedOrderIds = computed(() => orderBatch.selectedOrderIds.value)
 const obCurrentBatchName = computed(() => orderBatch.currentBatchName.value)
-const obShowOrderTags = computed(() => orderBatch.showOrderTags.value)
+const obShowOrderTags = computed({
+  get: () => orderBatch.showOrderTags.value,
+  set: (v: boolean) => { orderBatch.showOrderTags.value = v }
+})
 const obSelectedOrders = computed(() => orderBatch.selectedOrders.value)
 
 const qcMode = computed(() => qc.qcMode.value)
