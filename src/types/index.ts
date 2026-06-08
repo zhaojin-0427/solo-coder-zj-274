@@ -132,3 +132,93 @@ export interface MaterialEstimate {
   estimatedWaste: number
   pagesNeeded: number
 }
+
+export type OrderStatus = 'pending_layout' | 'layout_done' | 'printed' | 'delivered'
+
+export interface OrderPatternItem {
+  id: string
+  patternId: string
+  patternName: string
+  nailSize: NailSize
+  nailShape: NailShape
+  quantity: number
+  priority: number
+  setGroupId: string | null
+}
+
+export interface CustomerOrder {
+  id: string
+  orderNo: string
+  customerName: string
+  deliveryDate: string
+  isUrgent: boolean
+  notes: string
+  requiresFullSet: boolean
+  status: OrderStatus
+  items: OrderPatternItem[]
+  colorTag: string
+  createdAt: number
+  updatedAt: number
+  batchId: string | null
+}
+
+export interface OrderLayoutProgress {
+  orderId: string
+  totalItems: number
+  placedItems: number
+  completionPercent: number
+  isComplete: boolean
+  missingItems: OrderPatternItem[]
+  atRiskItems: OrderPatternItem[]
+}
+
+export interface BatchOrderInfo {
+  orderId: string
+  pages: number[]
+  placedCount: number
+  totalCount: number
+}
+
+export interface PageBatchInfo {
+  pageIndex: number
+  orders: BatchOrderInfo[]
+  estimatedSortTimeSeconds: number
+  riskLevel: 'low' | 'medium' | 'high'
+}
+
+export interface ProductionBatch {
+  id: string
+  name: string
+  orderIds: string[]
+  createdAt: number
+  updatedAt: number
+  placements: PlacedPattern[]
+  pageInfo: PageLayoutInfo[]
+  batchPageInfo: PageBatchInfo[]
+  settings: LayoutSettings
+  calibration: PrintCalibration
+}
+
+export interface DeliveryWarning {
+  orderId: string
+  orderNo: string
+  customerName: string
+  deliveryDate: string
+  daysRemaining: number
+  completionPercent: number
+  isUrgent: boolean
+  suggestion: string
+}
+
+export interface PlacedPatternWithOrder extends PlacedPattern {
+  orderId: string | null
+  orderNo: string | null
+  orderColorTag: string | null
+}
+
+export interface OrderLayoutResult extends LayoutResult {
+  placements: PlacedPatternWithOrder[]
+  orderProgress: Record<string, OrderLayoutProgress>
+  batchPageInfo: PageBatchInfo[]
+  deliveryWarnings: DeliveryWarning[]
+}

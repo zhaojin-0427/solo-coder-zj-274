@@ -13,8 +13,16 @@ import type {
   PatternTransform,
   NailSize,
   NailShape,
-  LayoutConflictType
+  LayoutConflictType,
+  CustomerOrder,
+  OrderLayoutResult,
+  PlacedPatternWithOrder
 } from '../types'
+import {
+  computeOrderLayoutProgress,
+  computeBatchPageInfo,
+  generateDeliveryWarnings
+} from './order'
 import { A4_WIDTH_MM, A4_HEIGHT_MM, getNailDimensions } from '../data/nailConfig'
 import { applyCalibrationWidth, applyCalibrationHeight, applyCalibrationX, applyCalibrationY } from './calibration'
 import { getEffectiveConfig } from './patternConfig'
@@ -36,6 +44,11 @@ interface LayoutItem {
   heightMm: number
   quantityRemaining: number
   originalIndex: number
+  orderId: string | null
+  orderNo: string | null
+  orderColorTag: string | null
+  orderPriority: number
+  isUrgent: boolean
 }
 
 export function getCalibratedA4Dimensions(
@@ -78,8 +91,48 @@ export function buildLayoutItems(
       widthMm: dims.width,
       heightMm: dims.height,
       quantityRemaining: cfg.quantity,
-      originalIndex: i
+      originalIndex: i,
+      orderId: null,
+      orderNo: null,
+      orderColorTag: null,
+      orderPriority: 0,
+      isUrgent: false
     })
+  }
+  return items
+}
+
+export function buildOrderLayoutItems(
+  orders: CustomerOrder[],
+  patterns: UploadedPattern[],
+  calibration: PrintCalibration
+): LayoutItem[] {
+  const items: LayoutItem[] = []
+  let globalIndex = 0
+  for (const order of orders) {
+    for (const item of order.items) {
+      const pattern = patterns.find(p => p.id === item.patternId)
+      if (!pattern) continue
+      const dims = getPatternDims(item.nailSize, calibration)
+      const orderPriorityBoost = order.isUrgent ? 10 : 0
+      items.push({
+        patternId: item.patternId,
+        setGroupId: item.setGroupId,
+        priority: item.priority,
+        nailSize: item.nailSize,
+        nailShape: item.nailShape,
+        widthMm: dims.width,
+        heightMm: dims.height,
+        quantityRemaining: item.quantity,
+        originalIndex: globalIndex,
+        orderId: order.id,
+        orderNo: order.orderNo,
+        orderColorTag: order.colorTag,
+        orderPriority: item.priority + orderPriorityBoost,
+        isUrgent: order.isUrgent
+      })
+      globalIndex++
+    }
   }
   return items
 }
@@ -189,18 +242,41 @@ function groupItemsBySet(items: LayoutItem[]): Map<string | null, LayoutItem[]> 
   return groups
 }
 
+function groupItemsByOrder(items: LayoutItem[]): Map<string | null, LayoutItem[]> {
+  const groups = new Map<string | null, LayoutItem[]>()
+  for (const item of items) {
+    const key = item.orderId || item.setGroupId
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(item)
+  }
+  return groups
+}
+
 function sortGroupsForPlacement(
-  groups: Map<string | null, LayoutItem[]>
+  groups: Map<string | null, LayoutItem[]>,
+  useOrderPriority: boolean = false
 ): Array<{ groupId: string | null; items: LayoutItem[] }> {
   const result: Array<{ groupId: string | null; items: LayoutItem[] }> = []
   for (const [groupId, items] of groups.entries()) {
     const sortedItems = [...items].sort((a, b) => {
+      if (useOrderPriority) {
+        if (b.isUrgent !== a.isUrgent) return b.isUrgent ? -1 : 1
+        if (b.orderPriority !== a.orderPriority) return b.orderPriority - a.orderPriority
+      }
       if (b.priority !== a.priority) return b.priority - a.priority
       return a.originalIndex - b.originalIndex
     })
     result.push({ groupId, items: sortedItems })
   }
   result.sort((a, b) => {
+    if (useOrderPriority) {
+      const aHasUrgent = a.items.some(i => i.isUrgent)
+      const bHasUrgent = b.items.some(i => i.isUrgent)
+      if (aHasUrgent !== bHasUrgent) return aHasUrgent ? -1 : 1
+      const aMaxOrderPrio = Math.max(...a.items.map(i => i.orderPriority))
+      const bMaxOrderPrio = Math.max(...b.items.map(i => i.orderPriority))
+      if (bMaxOrderPrio !== aMaxOrderPrio) return bMaxOrderPrio - aMaxOrderPrio
+    }
     const aMaxPriority = Math.max(...a.items.map(i => i.priority))
     const bMaxPriority = Math.max(...b.items.map(i => i.priority))
     if (bMaxPriority !== aMaxPriority) return bMaxPriority - aMaxPriority
@@ -271,15 +347,38 @@ function findNextAdjacentSlot(
   state: PageState,
   preferGroupId: string | null,
   itemWidth: number,
-  itemHeight: number
+  itemHeight: number,
+  preferOrderId: string | null = null
 ): { row: number; col: number } | null {
   const cellW = state.cellWidth
   const cellH = state.cellHeight
   const widthCells = Math.max(1, Math.ceil(itemWidth / cellW))
   const heightCells = Math.max(1, Math.ceil(itemHeight / cellH))
 
+  const statePlacements = state.placements as (PlacedPattern & { orderId?: string | null })[]
+
+  if (preferOrderId) {
+    const orderPlacements = statePlacements.filter(p => p.orderId === preferOrderId)
+    for (const gp of orderPlacements) {
+      const anchorCol = Math.round((gp.x - state.margin) / state.cellWidth)
+      const anchorRow = Math.round((gp.y - state.margin) / state.cellHeight)
+      const candidates = [
+        { row: anchorRow, col: anchorCol + widthCells },
+        { row: anchorRow + heightCells, col: anchorCol },
+        { row: anchorRow, col: anchorCol - widthCells },
+        { row: anchorRow - heightCells, col: anchorCol },
+        { row: anchorRow + heightCells, col: anchorCol + widthCells }
+      ]
+      for (const cand of candidates) {
+        if (cand.row >= 0 && cand.col >= 0 && cellAvailable(state, cand.row, cand.col, widthCells, heightCells)) {
+          return cand
+        }
+      }
+    }
+  }
+
   if (preferGroupId) {
-    const groupPlacements = state.placements.filter(p => p.setGroupId === preferGroupId)
+    const groupPlacements = statePlacements.filter(p => p.setGroupId === preferGroupId)
     for (const gp of groupPlacements) {
       const anchorCol = Math.round((gp.x - state.margin) / state.cellWidth)
       const anchorRow = Math.round((gp.y - state.margin) / state.cellHeight)
@@ -396,7 +495,7 @@ export function calculateLayout(
         let placed = false
         for (let p = 0; p < pages.length + 1; p++) {
           const page = getOrCreatePage(p)
-          const slot = findNextAdjacentSlot(page, groupId, item.widthMm, item.heightMm)
+          const slot = findNextAdjacentSlot(page, groupId, item.widthMm, item.heightMm, item.orderId)
           if (slot) {
             const widthCells = Math.max(1, Math.ceil(item.widthMm / cellWidth))
             const heightCells = Math.max(1, Math.ceil(item.heightMm / cellHeight))
@@ -405,7 +504,7 @@ export function calculateLayout(
             const y = calibratedMargin + slot.row * cellHeight
             const transformKey = `${item.patternId}-${configIndex}`
             const transform = preservedTransforms.get(transformKey) || { ...DEFAULT_TRANSFORM }
-            page.placements.push({
+            const placement: PlacedPattern & { orderId?: string | null; orderNo?: string | null; orderColorTag?: string | null } = {
               patternId: item.patternId,
               x: applyCalibrationX(x, calibration),
               y: applyCalibrationY(y, calibration),
@@ -416,8 +515,12 @@ export function calculateLayout(
               nailSize: item.nailSize,
               nailShape: item.nailShape as any,
               setGroupId: item.setGroupId,
-              configIndex
-            })
+              configIndex,
+              orderId: item.orderId,
+              orderNo: item.orderNo,
+              orderColorTag: item.orderColorTag
+            }
+            page.placements.push(placement)
             configIndex++
             item.quantityRemaining--
             placed = true
@@ -427,7 +530,7 @@ export function calculateLayout(
         if (!placed) {
           const p = pages.length
           const page = getOrCreatePage(p)
-          const slot = findNextAdjacentSlot(page, groupId, item.widthMm, item.heightMm)
+          const slot = findNextAdjacentSlot(page, groupId, item.widthMm, item.heightMm, item.orderId)
           if (slot) {
             const widthCells = Math.max(1, Math.ceil(item.widthMm / cellWidth))
             const heightCells = Math.max(1, Math.ceil(item.heightMm / cellHeight))
@@ -436,7 +539,7 @@ export function calculateLayout(
             const y = calibratedMargin + slot.row * cellHeight
             const transformKey = `${item.patternId}-${configIndex}`
             const transform = preservedTransforms.get(transformKey) || { ...DEFAULT_TRANSFORM }
-            page.placements.push({
+            const placement: PlacedPattern & { orderId?: string | null; orderNo?: string | null; orderColorTag?: string | null } = {
               patternId: item.patternId,
               x: applyCalibrationX(x, calibration),
               y: applyCalibrationY(y, calibration),
@@ -447,8 +550,12 @@ export function calculateLayout(
               nailSize: item.nailSize,
               nailShape: item.nailShape as any,
               setGroupId: item.setGroupId,
-              configIndex
-            })
+              configIndex,
+              orderId: item.orderId,
+              orderNo: item.orderNo,
+              orderColorTag: item.orderColorTag
+            }
+            page.placements.push(placement)
             configIndex++
             item.quantityRemaining--
           } else {
@@ -471,6 +578,189 @@ export function calculateLayout(
   )
 
   return { placements, conflicts, pageInfo }
+}
+
+export function calculateOrderLayout(
+  orders: CustomerOrder[],
+  patterns: UploadedPattern[],
+  settings: LayoutSettings,
+  calibration: PrintCalibration,
+  preservedTransforms: Map<string, PatternTransform> = new Map()
+): OrderLayoutResult {
+  const placements: PlacedPatternWithOrder[] = []
+  const a4 = getCalibratedA4Dimensions(calibration)
+  const calibratedMargin = applyCalibrationWidth(settings.margin, calibration)
+  const calibratedGapX = applyCalibrationWidth(settings.gapX, calibration)
+  const calibratedGapY = applyCalibrationHeight(settings.gapY, calibration)
+
+  const usableWidth = a4.widthMm - 2 * calibratedMargin
+  const usableHeight = a4.heightMm - 2 * calibratedMargin
+
+  const baseDims = getPatternDims(settings.nailSize, calibration)
+  const cellWidth = baseDims.width + calibratedGapX
+  const cellHeight = baseDims.height + calibratedGapY
+
+  const colsPerRow = Math.max(0, Math.floor(usableWidth / cellWidth))
+  const rowsPerPage = Math.max(0, Math.floor(usableHeight / cellHeight))
+
+  const dummyConfigs: Record<string, PatternIndependentConfig> = {}
+  const allPatterns: UploadedPattern[] = []
+  const seenPatternIds = new Set<string>()
+  for (const order of orders) {
+    for (const item of order.items) {
+      if (!seenPatternIds.has(item.patternId)) {
+        seenPatternIds.add(item.patternId)
+        const pat = patterns.find(p => p.id === item.patternId)
+        if (pat) {
+          allPatterns.push(pat)
+        }
+        dummyConfigs[item.patternId] = {
+          nailSize: item.nailSize,
+          nailShape: item.nailShape,
+          quantity: item.quantity,
+          priority: item.priority,
+          setGroupId: item.setGroupId
+        }
+      }
+    }
+  }
+
+  const conflicts = detectLayoutConflicts(allPatterns, dummyConfigs, settings, calibration)
+  const hasBlockingConflicts = conflicts.some(
+    c => c.type === 'margin_too_large' || c.type === 'no_patterns_fit'
+  )
+
+  if (allPatterns.length === 0 || colsPerRow === 0 || rowsPerPage === 0 || hasBlockingConflicts) {
+    const emptyProgress: Record<string, any> = {}
+    for (const order of orders) {
+      emptyProgress[order.id] = {
+        orderId: order.id,
+        totalItems: 0,
+        placedItems: 0,
+        completionPercent: 0,
+        isComplete: false,
+        missingItems: order.items,
+        atRiskItems: []
+      }
+    }
+    return {
+      placements: [],
+      conflicts,
+      pageInfo: [],
+      orderProgress: emptyProgress,
+      batchPageInfo: [],
+      deliveryWarnings: generateDeliveryWarnings(orders, emptyProgress)
+    }
+  }
+
+  const allItems = buildOrderLayoutItems(orders, patterns, calibration)
+  const sortedGroups = sortGroupsForPlacement(groupItemsByOrder(allItems), true)
+
+  const pages: PageState[] = []
+
+  function getOrCreatePage(idx: number): PageState {
+    if (!pages[idx]) {
+      pages[idx] = createPageState(
+        idx, cellWidth, cellHeight, colsPerRow, rowsPerPage,
+        calibratedMargin, calibratedGapX, calibratedGapY
+      )
+    }
+    return pages[idx]
+  }
+
+  let configIndex = 0
+  for (const { groupId, items } of sortedGroups) {
+    for (const item of items) {
+      while (item.quantityRemaining > 0) {
+        let placed = false
+        for (let p = 0; p < pages.length + 1; p++) {
+          const page = getOrCreatePage(p)
+          const slot = findNextAdjacentSlot(page, groupId, item.widthMm, item.heightMm, item.orderId)
+          if (slot) {
+            const widthCells = Math.max(1, Math.ceil(item.widthMm / cellWidth))
+            const heightCells = Math.max(1, Math.ceil(item.heightMm / cellHeight))
+            markCellsUsed(page, slot.row, slot.col, widthCells, heightCells)
+            const x = calibratedMargin + slot.col * cellWidth
+            const y = calibratedMargin + slot.row * cellHeight
+            const transformKey = `${item.patternId}-${configIndex}`
+            const transform = preservedTransforms.get(transformKey) || { ...DEFAULT_TRANSFORM }
+            page.placements.push({
+              patternId: item.patternId,
+              x: applyCalibrationX(x, calibration),
+              y: applyCalibrationY(y, calibration),
+              width: item.widthMm,
+              height: item.heightMm,
+              transform,
+              pageIndex: p,
+              nailSize: item.nailSize,
+              nailShape: item.nailShape as any,
+              setGroupId: item.setGroupId,
+              configIndex,
+              orderId: item.orderId,
+              orderNo: item.orderNo,
+              orderColorTag: item.orderColorTag
+            } as PlacedPatternWithOrder)
+            configIndex++
+            item.quantityRemaining--
+            placed = true
+            break
+          }
+        }
+        if (!placed) {
+          const p = pages.length
+          const page = getOrCreatePage(p)
+          const slot = findNextAdjacentSlot(page, groupId, item.widthMm, item.heightMm, item.orderId)
+          if (slot) {
+            const widthCells = Math.max(1, Math.ceil(item.widthMm / cellWidth))
+            const heightCells = Math.max(1, Math.ceil(item.heightMm / cellHeight))
+            markCellsUsed(page, slot.row, slot.col, widthCells, heightCells)
+            const x = calibratedMargin + slot.col * cellWidth
+            const y = calibratedMargin + slot.row * cellHeight
+            const transformKey = `${item.patternId}-${configIndex}`
+            const transform = preservedTransforms.get(transformKey) || { ...DEFAULT_TRANSFORM }
+            page.placements.push({
+              patternId: item.patternId,
+              x: applyCalibrationX(x, calibration),
+              y: applyCalibrationY(y, calibration),
+              width: item.widthMm,
+              height: item.heightMm,
+              transform,
+              pageIndex: p,
+              nailSize: item.nailSize,
+              nailShape: item.nailShape as any,
+              setGroupId: item.setGroupId,
+              configIndex,
+              orderId: item.orderId,
+              orderNo: item.orderNo,
+              orderColorTag: item.orderColorTag
+            } as PlacedPatternWithOrder)
+            configIndex++
+            item.quantityRemaining--
+          } else {
+            item.quantityRemaining = 0
+          }
+        }
+      }
+    }
+  }
+
+  for (const page of pages) {
+    for (const pl of page.placements) {
+      placements.push(pl as PlacedPatternWithOrder)
+    }
+  }
+
+  const pageInfo = computePageLayoutInfo(
+    placements as any, pages, dummyConfigs, settings, calibration,
+    colsPerRow, rowsPerPage, cellWidth, cellHeight
+  )
+
+  const orderProgress = computeOrderLayoutProgress(orders, placements)
+  const totalPages = pages.length
+  const batchPageInfo = computeBatchPageInfo(orders, placements, totalPages)
+  const deliveryWarnings = generateDeliveryWarnings(orders, orderProgress)
+
+  return { placements, conflicts, pageInfo, orderProgress, batchPageInfo, deliveryWarnings }
 }
 
 function computePageLayoutInfo(

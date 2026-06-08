@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 import { A4_WIDTH_MM, A4_HEIGHT_MM } from '../data/nailConfig'
-import type { PrintCalibration } from '../types'
+import type { PrintCalibration, CustomerOrder, PlacedPatternWithOrder, OrderLayoutProgress } from '../types'
 import { applyCalibrationWidth, applyCalibrationHeight } from './calibration'
 
 export async function exportToPDF(
@@ -37,6 +37,242 @@ export async function exportToPDF(
     }
 
     pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight)
+  }
+
+  pdf.save(fileName)
+}
+
+export async function exportToPDFWithOrderList(
+  pages: Map<number, HTMLElement>,
+  calibration: PrintCalibration,
+  orders: CustomerOrder[],
+  placements: PlacedPatternWithOrder[],
+  orderProgress: Record<string, OrderLayoutProgress>,
+  batchName: string = '',
+  fileName: string = 'nail-stickers-with-orders.pdf'
+): Promise<void> {
+  const pdfWidth = applyCalibrationWidth(A4_WIDTH_MM, calibration)
+  const pdfHeight = applyCalibrationHeight(A4_HEIGHT_MM, calibration)
+
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: [pdfWidth, pdfHeight]
+  })
+
+  const pageIndices = Array.from(pages.keys()).sort((a, b) => a - b)
+
+  for (let i = 0; i < pageIndices.length; i++) {
+    const pageElement = pages.get(pageIndices[i])
+    if (!pageElement) continue
+
+    const canvas = await html2canvas(pageElement, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#ffffff'
+    })
+
+    const imgData = canvas.toDataURL('image/png')
+
+    if (i > 0) {
+      pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+    }
+
+    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight)
+  }
+
+  if (orders.length > 0) {
+    pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+
+    let y = 15
+    pdf.setFontSize(16)
+    pdf.setFont('helvetica', 'bold')
+    pdf.text(batchName || '生产批次 - 订单分拣清单', pdfWidth / 2, y, { align: 'center' })
+    y += 8
+
+    pdf.setFontSize(9)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(100, 100, 100)
+    const now = new Date()
+    pdf.text(
+      `生成时间: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`,
+      pdfWidth / 2,
+      y,
+      { align: 'center' }
+    )
+    y += 8
+
+    pdf.setDrawColor(200, 200, 200)
+    pdf.setLineWidth(0.2)
+    pdf.line(15, y, pdfWidth - 15, y)
+    y += 6
+
+    const activeOrders = orders.filter(o => orderProgress[o.id] && orderProgress[o.id].totalItems > 0)
+
+    for (let oi = 0; oi < activeOrders.length; oi++) {
+      const order = activeOrders[oi]
+      const progress = orderProgress[order.id]
+
+      if (y > pdfHeight - 50) {
+        pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+        y = 20
+      }
+
+      pdf.setFillColor(
+        parseInt(order.colorTag.slice(1, 3), 16),
+        parseInt(order.colorTag.slice(3, 5), 16),
+        parseInt(order.colorTag.slice(5, 7), 16)
+      )
+      pdf.rect(15, y - 3, 4, 4, 'F')
+
+      pdf.setFontSize(12)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setTextColor(0, 0, 0)
+      pdf.text(order.customerName, 22, y)
+
+      pdf.setFontSize(9)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(120, 120, 120)
+      pdf.text(order.orderNo, pdfWidth - 50, y, { align: 'right' })
+      y += 5
+
+      pdf.setFontSize(9)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(80, 80, 80)
+
+      const statusText: Record<string, string> = {
+        pending_layout: '待排版',
+        layout_done: '已排版',
+        printed: '已打印',
+        delivered: '已交付'
+      }
+      const infoParts = [
+        `交付日期: ${order.deliveryDate}`,
+        `状态: ${statusText[order.status] || order.status}`,
+        order.isUrgent ? '急单' : '',
+        order.requiresFullSet ? '成套要求' : ''
+      ].filter(Boolean)
+      pdf.text(infoParts.join('  |  '), 22, y)
+      y += 4
+
+      const totalItems = progress?.totalItems || 0
+      const placedItems = progress?.placedItems || 0
+      const completionPct = totalItems > 0 ? Math.round((placedItems / totalItems) * 100) : 0
+
+      pdf.text(`完成度: ${placedItems}/${totalItems} (${completionPct}%)`, 22, y)
+
+      const barX = 80
+      const barWidth = pdfWidth - 95
+      const barHeight = 3
+      pdf.setDrawColor(220, 220, 220)
+      pdf.rect(barX, y - 2, barWidth, barHeight, 'D')
+      if (completionPct > 0) {
+        if (completionPct >= 100) {
+          pdf.setFillColor(34, 197, 94)
+        } else if (completionPct >= 50) {
+          pdf.setFillColor(59, 130, 246)
+        } else {
+          pdf.setFillColor(239, 68, 68)
+        }
+        pdf.rect(barX, y - 2, (barWidth * completionPct) / 100, barHeight, 'F')
+      }
+      y += 6
+
+      if (order.items.length > 0) {
+        pdf.setFontSize(8)
+        pdf.setTextColor(100, 100, 100)
+        pdf.text('图案明细:', 22, y)
+        y += 4
+
+        const placedByPattern = new Map<string, number>()
+        for (const pl of placements) {
+          if (pl.orderId === order.id) {
+            placedByPattern.set(pl.patternId, (placedByPattern.get(pl.patternId) || 0) + 1)
+          }
+        }
+
+        for (const item of order.items) {
+          if (y > pdfHeight - 20) {
+            pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+            y = 20
+          }
+          const placed = placedByPattern.get(item.patternId) || 0
+          const complete = placed >= item.quantity
+          pdf.setTextColor(complete ? 34 : 239, complete ? 197 : 68, complete ? 94 : 68)
+          pdf.setFont('helvetica', 'normal')
+          pdf.text(
+            `  · ${item.patternName}  [${item.nailSize}/${item.nailShape}]  ${placed}/${item.quantity}${item.priority > 1 ? `  P${item.priority}` : ''}`,
+            24,
+            y
+          )
+          y += 4
+        }
+      }
+
+      if (order.notes) {
+        if (y > pdfHeight - 20) {
+          pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+          y = 20
+        }
+        pdf.setFontSize(8)
+        pdf.setTextColor(120, 120, 120)
+        const noteLines = pdf.splitTextToSize(`备注: ${order.notes}`, pdfWidth - 40)
+        pdf.text(noteLines, 22, y)
+        y += noteLines.length * 4 + 2
+      }
+
+      if (progress?.missingItems.length) {
+        if (y > pdfHeight - 20) {
+          pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+          y = 20
+        }
+        pdf.setFontSize(8)
+        pdf.setTextColor(239, 68, 68)
+        pdf.text(`缺件警告: ${progress.missingItems.length} 项未排入`, 22, y)
+        y += 5
+      }
+
+      y += 3
+      pdf.setDrawColor(230, 230, 230)
+      pdf.line(15, y, pdfWidth - 15, y)
+      y += 5
+    }
+
+    if (pageIndices.length > 0) {
+      if (y > pdfHeight - 40) {
+        pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+        y = 20
+      }
+      pdf.setFontSize(10)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setTextColor(0, 0, 0)
+      pdf.text('分页订单分布', 15, y)
+      y += 6
+
+      pdf.setFontSize(8)
+      const pageOrderMap = new Map<number, string[]>()
+      for (const pl of placements) {
+        if (!pl.orderId) continue
+        if (!pageOrderMap.has(pl.pageIndex)) {
+          pageOrderMap.set(pl.pageIndex, [])
+        }
+        const order = orders.find(o => o.id === pl.orderId)
+        if (order && !pageOrderMap.get(pl.pageIndex)!.includes(order.customerName)) {
+          pageOrderMap.get(pl.pageIndex)!.push(order.customerName)
+        }
+      }
+
+      for (let p = 0; p < pageIndices.length; p++) {
+        if (y > pdfHeight - 15) {
+          pdf.addPage([pdfWidth, pdfHeight], 'portrait')
+          y = 20
+        }
+        const customers = pageOrderMap.get(p) || []
+        pdf.setTextColor(80, 80, 80)
+        pdf.text(`第 ${p + 1} 页: ${customers.length > 0 ? customers.join(', ') : '无'}`, 18, y)
+        y += 4
+      }
+    }
   }
 
   pdf.save(fileName)

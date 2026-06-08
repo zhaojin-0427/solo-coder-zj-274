@@ -7,7 +7,10 @@ import type {
   PageLayoutInfo,
   SetGroup,
   PatternIndependentConfig,
-  PrintCalibration
+  PrintCalibration,
+  PlacedPatternWithOrder,
+  CustomerOrder,
+  PageBatchInfo
 } from '../types'
 import { getNailClipPath } from '../data/nailConfig'
 
@@ -20,6 +23,9 @@ const props = defineProps<{
   pageInfo: PageLayoutInfo[]
   previewMode: boolean
   calibration: PrintCalibration
+  orders?: CustomerOrder[]
+  batchPageInfo?: PageBatchInfo[]
+  showOrderTags?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -54,6 +60,16 @@ const pageInfoByIndex = computed(() => {
   return m
 })
 
+const batchPageInfoByIndex = computed(() => {
+  const m = new Map<number, PageBatchInfo>()
+  if (props.batchPageInfo) {
+    for (const bi of props.batchPageInfo) {
+      m.set(bi.pageIndex, bi)
+    }
+  }
+  return m
+})
+
 watch(
   () => [pageIndices.value.length, props.placements.length],
   async () => {
@@ -78,6 +94,20 @@ function getPatternById(id: string): UploadedPattern | undefined {
 function getGroupById(id: string | null): SetGroup | undefined {
   if (!id) return undefined
   return props.setGroups.find(g => g.id === id)
+}
+
+function getOrderById(id: string | null): CustomerOrder | undefined {
+  if (!id || !props.orders) return undefined
+  return props.orders.find(o => o.id === id)
+}
+
+function getPlacementOrderInfo(p: PlacedPattern): { orderId: string | null; orderNo: string | null; orderColorTag: string | null } {
+  const pp = p as PlacedPatternWithOrder
+  return {
+    orderId: pp.orderId || null,
+    orderNo: pp.orderNo || null,
+    orderColorTag: pp.orderColorTag || null
+  }
 }
 
 function getTransformStyle(transform: PlacedPattern['transform']): Record<string, string> {
@@ -112,6 +142,29 @@ function pageSetCompletionText(info: PageLayoutInfo | undefined): string {
       return `${name} ${sc.placed}/${sc.total}${sc.complete ? '✓' : ''}`
     })
     .join(' · ')
+}
+
+function pageOrderText(pageIdx: number): string {
+  const batchInfo = batchPageInfoByIndex.value.get(pageIdx)
+  if (!batchInfo || !props.orders || batchInfo.orders.length === 0) return ''
+  return batchInfo.orders
+    .map(oi => {
+      const order = getOrderById(oi.orderId)
+      if (!order) return ''
+      return `${order.customerName} ${oi.placedCount}/${oi.totalCount}`
+    })
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function getRiskLabel(level: 'low' | 'medium' | 'high'): string {
+  const map = { low: '低风险', medium: '中风险', high: '高风险' }
+  return map[level]
+}
+
+function getRiskColorClass(level: 'low' | 'medium' | 'high'): string {
+  const map = { low: 'text-green-600', medium: 'text-amber-600', high: 'text-red-600' }
+  return map[level]
 }
 </script>
 
@@ -148,12 +201,24 @@ function pageSetCompletionText(info: PageLayoutInfo | undefined): string {
               </span>
             </template>
           </template>
+          <template v-if="batchPageInfoByIndex.get(pageIdx)">
+            <span class="mx-1">·</span>
+            <span :class="getRiskColorClass(batchPageInfoByIndex.get(pageIdx)!.riskLevel)">
+              {{ getRiskLabel(batchPageInfoByIndex.get(pageIdx)!.riskLevel) }}
+            </span>
+          </template>
         </div>
         <div
           v-if="pageInfoByIndex.get(pageIdx) && Object.keys(pageInfoByIndex.get(pageIdx)!.setCompletion).length > 0"
           class="text-[10px] text-center text-gray-500 mb-1 px-2"
         >
           套图完整度: {{ pageSetCompletionText(pageInfoByIndex.get(pageIdx)) }}
+        </div>
+        <div
+          v-if="orders && orders.length > 0 && pageOrderText(pageIdx)"
+          class="text-[10px] text-center text-gray-600 mb-1 px-2"
+        >
+          本页订单: {{ pageOrderText(pageIdx) }}
         </div>
         <div
           :ref="(el) => setPageRef(pageIdx, el)"
@@ -174,14 +239,29 @@ function pageSetCompletionText(info: PageLayoutInfo | undefined): string {
               height: `${placement.height}mm`,
               clipPath: getNailClipPath(placement.nailShape as NailShape),
               borderRadius: placement.nailShape === 'round' || placement.nailShape === 'oval' ? '50%' : undefined,
-              boxShadow: getGroupById(placement.setGroupId)
+              boxShadow: getPlacementOrderInfo(placement).orderColorTag
+                ? `0 0 0 1.5px ${getPlacementOrderInfo(placement).orderColorTag}, inset 0 0 0 0.5px rgba(255,255,255,0.5)`
+                : getGroupById(placement.setGroupId)
                 ? `0 0 0 1px ${getGroupById(placement.setGroupId)!.color}`
-                : undefined
+                : 'none'
             }"
             @click.stop="emit('select', getGlobalIndex(placement))"
           >
             <div
-              v-if="getGroupById(placement.setGroupId)"
+              v-if="getPlacementOrderInfo(placement).orderColorTag"
+              class="absolute -top-0.5 -left-0.5 w-3 h-3 rounded-sm border border-white shadow-sm flex items-center justify-center"
+              :style="{ backgroundColor: getPlacementOrderInfo(placement).orderColorTag || '' }"
+              :title="getOrderById(getPlacementOrderInfo(placement).orderId)?.customerName || ''"
+            >
+              <span
+                v-if="showOrderTags && getPlacementOrderInfo(placement).orderNo"
+                class="text-[6px] font-bold text-white leading-none"
+              >
+                {{ getPlacementOrderInfo(placement).orderNo!.slice(-2) }}
+              </span>
+            </div>
+            <div
+              v-else-if="getGroupById(placement.setGroupId)"
               class="absolute top-0 left-0 w-2 h-2"
               :style="{ backgroundColor: getGroupById(placement.setGroupId)!.color }"
             ></div>
@@ -191,6 +271,34 @@ function pageSetCompletionText(info: PageLayoutInfo | undefined): string {
               :style="getTransformStyle(placement.transform)"
               draggable="false"
             />
+            <div
+              v-if="showOrderTags && getPlacementOrderInfo(placement).orderColorTag"
+              class="absolute bottom-0 right-0 bg-black/60 rounded-tl px-1 py-0.5 pointer-events-none"
+            >
+              <span class="text-[6px] font-bold text-white leading-none whitespace-nowrap">
+                {{ getOrderById(getPlacementOrderInfo(placement).orderId)?.customerName?.slice(0, 2) || getPlacementOrderInfo(placement).orderNo?.slice(-2) || '' }}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div
+          v-if="orders && orders.length > 0"
+          class="mt-2 flex flex-wrap justify-center gap-1.5"
+        >
+          <div
+            v-for="order in orders.filter(o => {
+              const info = batchPageInfoByIndex.get(pageIdx)
+              return info?.orders.some(oi => oi.orderId === o.id)
+            })"
+            :key="order.id"
+            class="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-100 rounded text-[9px]"
+          >
+            <span
+              class="w-2 h-2 rounded-sm"
+              :style="{ backgroundColor: order.colorTag }"
+            ></span>
+            <span class="text-gray-700">{{ order.customerName }}</span>
+            <span v-if="order.isUrgent" class="text-red-500 font-medium">急</span>
           </div>
         </div>
       </div>
