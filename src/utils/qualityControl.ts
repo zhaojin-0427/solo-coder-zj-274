@@ -17,10 +17,11 @@ import type {
   OrderPatternItem,
   NailSize,
   NailShape,
-  PlacedPattern
+  PlacedPattern,
+  PatternIndependentConfig
 } from '../types'
 import { generateId } from './image'
-import { calculateOrderLayout } from './layout'
+import { calculateOrderLayout, calculateLayout } from './layout'
 
 const QC_SESSION_STORAGE_KEY = 'nail_sticker_qc_sessions'
 const REWORK_BATCH_STORAGE_KEY = 'nail_sticker_rework_batches'
@@ -435,7 +436,7 @@ export function completeQCSession(session: QCInspectionSession): QCInspectionSes
 
 export function generateReworkBatch(params: {
   session: QCInspectionSession
-  placements: PlacedPatternWithOrder[]
+  placements: (PlacedPattern | PlacedPatternWithOrder)[]
   patterns: UploadedPattern[]
   settings: LayoutSettings
   calibration: PrintCalibration
@@ -457,15 +458,15 @@ export function generateReworkBatch(params: {
   for (const pageCheck of Object.values(session.pageChecks)) {
     for (const pc of Object.values(pageCheck.patternChecks)) {
       if (pc.status !== 'failed') continue
-      const pl = placements[pc.placementGlobalIndex]
+      const pl = placements[pc.placementGlobalIndex] as (PlacedPattern | (PlacedPatternWithOrder & { orderId?: string | null; orderItemId?: string | null }))
       if (!pl) continue
 
-      const key = `${pl.patternId}-${pl.orderId || 'none'}-${pl.orderItemId || 'none'}-${pl.nailSize}-${pl.nailShape}`
+      const key = `${pl.patternId}-${(pl as any).orderId || 'none'}-${(pl as any).orderItemId || 'none'}-${pl.nailSize}-${pl.nailShape}`
       if (!reworkMap.has(key)) {
         reworkMap.set(key, {
           patternId: pl.patternId,
-          orderId: pl.orderId || null,
-          orderItemId: pl.orderItemId || null,
+          orderId: (pl as any).orderId || null,
+          orderItemId: (pl as any).orderItemId || null,
           quantity: 0,
           nailSize: pl.nailSize,
           nailShape: pl.nailShape,
@@ -482,27 +483,123 @@ export function generateReworkBatch(params: {
 
   const reworkItems = Array.from(reworkMap.values())
 
-  const reworkOrders: CustomerOrder[] = []
-  if (orders) {
-    const seenOrderIds = new Set(reworkItems.map(i => i.orderId).filter(Boolean) as string[])
-    for (const oid of seenOrderIds) {
-      const order = orders.find(o => o.id === oid)
-      if (order) reworkOrders.push(order)
-    }
-  }
-
-  const reworkPlacements: PlacedPatternWithOrder[] = []
-  const reworkPageInfo: any[] = []
+  let reworkPlacements: PlacedPatternWithOrder[] = []
+  let reworkPageInfo: any[] = []
 
   if (reworkItems.length > 0) {
-    const result = calculateOrderLayout(
-      reworkOrders,
-      patterns,
-      settings,
-      calibration
-    )
-    reworkPlacements.push(...result.placements)
-    reworkPageInfo.push(...result.pageInfo)
+    if (session.sourceType === 'order' && orders && orders.length > 0) {
+      const orderReworkMap = new Map<string, CustomerOrder>()
+      for (const item of reworkItems) {
+        if (!item.orderId) continue
+        if (!orderReworkMap.has(item.orderId)) {
+          const originalOrder = orders.find(o => o.id === item.orderId)
+          if (originalOrder) {
+            orderReworkMap.set(item.orderId, {
+              ...originalOrder,
+              items: []
+            })
+          }
+        }
+        const reworkOrder = orderReworkMap.get(item.orderId)
+        if (reworkOrder) {
+          const pat = patterns.find(p => p.id === item.patternId)
+          reworkOrder.items.push({
+            id: item.orderItemId || `rework-${item.patternId}`,
+            patternId: item.patternId,
+            patternName: pat?.name || '未知图案',
+            nailSize: item.nailSize,
+            nailShape: item.nailShape,
+            quantity: item.quantity,
+            priority: 0,
+            setGroupId: null
+          })
+        }
+      }
+
+      const reworkOrders = Array.from(orderReworkMap.values())
+      const standaloneItems = reworkItems.filter(i => !i.orderId)
+      if (standaloneItems.length > 0) {
+        const standaloneOrder: CustomerOrder = {
+          id: 'rework-standalone',
+          orderNo: 'RW-STANDALONE',
+          customerName: '独立返工',
+          deliveryDate: new Date().toISOString().split('T')[0],
+          isUrgent: true,
+          notes: '无订单关联的返工贴纸',
+          requiresFullSet: false,
+          status: 'printed',
+          items: standaloneItems.map(item => {
+            const pat = patterns.find(p => p.id === item.patternId)
+            return {
+              id: `rework-${item.patternId}`,
+              patternId: item.patternId,
+              patternName: pat?.name || '未知图案',
+              nailSize: item.nailSize,
+              nailShape: item.nailShape,
+              quantity: item.quantity,
+              priority: 0,
+              setGroupId: null
+            }
+          }),
+          colorTag: '#8B5CF6',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          batchId: null
+        }
+        reworkOrders.push(standaloneOrder)
+      }
+
+      if (reworkOrders.length > 0) {
+        const result = calculateOrderLayout(
+          reworkOrders,
+          patterns,
+          settings,
+          calibration
+        )
+        reworkPlacements = result.placements
+        reworkPageInfo = result.pageInfo
+      }
+    } else {
+      const reworkConfigs: Record<string, PatternIndependentConfig> = {}
+      const reworkPatterns: UploadedPattern[] = []
+      const seenPatternIds = new Set<string>()
+
+      for (const item of reworkItems) {
+        if (!seenPatternIds.has(item.patternId)) {
+          const pat = patterns.find(p => p.id === item.patternId)
+          if (pat) {
+            reworkPatterns.push(pat)
+            seenPatternIds.add(item.patternId)
+          }
+        }
+        reworkConfigs[item.patternId] = {
+          nailSize: item.nailSize,
+          nailShape: item.nailShape,
+          quantity: (reworkConfigs[item.patternId]?.quantity || 0) + item.quantity,
+          priority: 0,
+          setGroupId: null
+        }
+      }
+
+      if (reworkPatterns.length > 0) {
+        const result = calculateLayout(
+          reworkPatterns,
+          reworkConfigs,
+          settings,
+          calibration
+        )
+        reworkPlacements = result.placements.map(p => ({
+          ...p,
+          orderId: null,
+          orderNo: null,
+          orderColorTag: null,
+          orderPriority: 0,
+          isUrgent: false,
+          orderItemId: null
+        })) as PlacedPatternWithOrder[]
+        reworkPageInfo = result.pageInfo
+      }
+    }
   }
 
   return {

@@ -314,6 +314,13 @@ function getPatternByGlobalIndex(idx: number): (PlacedPattern | PlacedPatternWit
   return props.placements[idx]
 }
 
+function getSelectedPatternInfo(): UploadedPattern | undefined {
+  if (props.selectedPlacementIndex === null) return undefined
+  const pl = props.placements[props.selectedPlacementIndex]
+  if (!pl) return undefined
+  return props.patterns.find(p => p.id === pl.patternId)
+}
+
 function formatDate(ts: number): string {
   const d = new Date(ts)
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
@@ -394,7 +401,7 @@ onMounted(() => {
         </div>
       </template>
 
-      <template v-else>
+      <template v-else-if="qcSession">
         <div class="flex bg-gray-100 rounded-lg p-0.5 mb-3">
           <button
             v-for="tab in [
@@ -698,14 +705,14 @@ onMounted(() => {
               <div class="bg-gray-50 rounded-md p-2 flex items-center gap-2">
                 <div class="w-12 h-12 bg-white rounded border border-gray-200 overflow-hidden flex-shrink-0">
                   <img
-                    v-if="patterns.find(p => p.id === getPatternByGlobalIndex(selectedPlacementIndex)?.patternId)"
-                    :src="patterns.find(p => p.id === getPatternByGlobalIndex(selectedPlacementIndex)!.patternId)!.dataUrl"
+                    v-if="getSelectedPatternInfo()"
+                    :src="getSelectedPatternInfo()!.dataUrl"
                     class="w-full h-full object-contain"
                   />
                 </div>
                 <div class="flex-1 min-w-0">
                   <div class="text-[11px] font-medium text-gray-800 truncate">
-                    {{ patterns.find(p => p.id === getPatternByGlobalIndex(selectedPlacementIndex)?.patternId)?.name || '未知' }}
+                    {{ getSelectedPatternInfo()?.name || '未知' }}
                   </div>
                   <div class="text-[9px] text-gray-500">
                     第 {{ currentPageIndex + 1 }} 页 · {{ getPatternByGlobalIndex(selectedPlacementIndex)?.nailSize }}/{{ getPatternByGlobalIndex(selectedPlacementIndex)?.nailShape }}
@@ -799,7 +806,7 @@ onMounted(() => {
                   ></span>
                   <span class="text-[11px] font-medium text-gray-800 flex-1 truncate">{{ order.customerName }}</span>
                   <span
-                    v-if="isOrderDeliverable(qcSession, order.id).deliverable"
+                    v-if="isOrderDeliverable(qcSession!, order.id).deliverable"
                     class="text-[9px] px-1 bg-green-100 text-green-700 rounded"
                   >可交付</span>
                   <span
@@ -841,8 +848,8 @@ onMounted(() => {
                     </div>
                   </div>
 
-                  <div class="text-[9px]" :class="isOrderDeliverable(qcSession, order.id).deliverable ? 'text-green-600' : 'text-red-600'">
-                    {{ isOrderDeliverable(qcSession, order.id).reason }}
+                  <div class="text-[9px]" :class="isOrderDeliverable(qcSession!, order.id).deliverable ? 'text-green-600' : 'text-red-600'">
+                    {{ isOrderDeliverable(qcSession!, order.id).reason }}
                   </div>
                 </div>
                 <div v-else class="text-[9px] text-gray-400">尚未开始质检</div>

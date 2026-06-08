@@ -502,13 +502,21 @@ function handleQCStatsChange(stats: QCBatchStats) {
 
 function handleApplyReworkBatch(batch: ReworkBatch) {
   if (batch.placements.length > 0) {
-    orderLayoutResult.value = {
-      placements: batch.placements,
-      conflicts: [],
-      pageInfo: batch.pageInfo,
-      orderProgress: {},
-      batchPageInfo: [],
-      deliveryWarnings: []
+    if (appMode.value === 'order') {
+      orderLayoutResult.value = {
+        placements: batch.placements,
+        conflicts: [],
+        pageInfo: batch.pageInfo,
+        orderProgress: {},
+        batchPageInfo: [],
+        deliveryWarnings: []
+      }
+    } else {
+      layoutResult.value = {
+        placements: batch.placements as any,
+        conflicts: [],
+        pageInfo: batch.pageInfo
+      }
     }
     layoutSettings.value = batch.settings
     calibration.value = batch.calibration
