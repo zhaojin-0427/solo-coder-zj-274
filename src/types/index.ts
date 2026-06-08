@@ -214,6 +214,7 @@ export interface PlacedPatternWithOrder extends PlacedPattern {
   orderId: string | null
   orderNo: string | null
   orderColorTag: string | null
+  orderItemId: string | null
 }
 
 export interface OrderLayoutResult extends LayoutResult {

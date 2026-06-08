@@ -82,11 +82,19 @@ function resetForm() {
 }
 
 function openCreateForm() {
+  if (props.patterns.length === 0) {
+    alert('请先上传图案，再创建订单')
+    return
+  }
   resetForm()
   showForm.value = true
 }
 
 function openEditForm(order: CustomerOrder) {
+  if (props.patterns.length === 0) {
+    alert('请先上传图案，再编辑订单')
+    return
+  }
   form.value = {
     customerName: order.customerName,
     deliveryDate: order.deliveryDate,
@@ -106,8 +114,12 @@ function openEditForm(order: CustomerOrder) {
 }
 
 function addItem() {
+  if (props.patterns.length === 0) {
+    alert('请先上传图案再添加条目')
+    return
+  }
   form.value.items.push({
-    patternId: props.patterns[0]?.id || '',
+    patternId: props.patterns[0].id,
     nailSize: 'M',
     nailShape: 'square',
     quantity: 5,
@@ -132,12 +144,20 @@ function handleSubmit() {
     alert('请至少添加一个图案条目')
     return
   }
+  for (let i = 0; i < form.value.items.length; i++) {
+    const it = form.value.items[i]
+    const pat = props.patterns.find(p => p.id === it.patternId)
+    if (!pat) {
+      alert(`第 ${i + 1} 条图案条目使用了无效或已删除的图案，请重新选择`)
+      return
+    }
+  }
 
   const items: OrderPatternItem[] = form.value.items.map(i => {
-    const pat = props.patterns.find(p => p.id === i.patternId)
+    const pat = props.patterns.find(p => p.id === i.patternId)!
     return createOrderItem({
       patternId: i.patternId,
-      patternName: pat?.name || '未知图案',
+      patternName: pat.name,
       nailSize: i.nailSize,
       nailShape: i.nailShape,
       quantity: i.quantity,
@@ -217,7 +237,7 @@ function getPatternName(id: string): string {
 watch(
   () => props.patterns,
   () => {
-    if (form.value.items.length === 0 && props.patterns.length > 0) {
+    if (form.value.items.length === 0 && props.patterns.length > 0 && showForm.value) {
       addItem()
     }
   },
@@ -230,7 +250,14 @@ watch(
     <div class="p-4 flex items-center justify-between">
       <h3 class="text-sm font-semibold text-gray-800">客户订单管理</h3>
       <button
-        class="px-3 py-1.5 bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium rounded-lg transition-colors"
+        :disabled="patterns.length === 0"
+        :class="[
+          'px-3 py-1.5 text-white text-xs font-medium rounded-lg transition-colors',
+          patterns.length === 0
+            ? 'bg-gray-300 cursor-not-allowed'
+            : 'bg-primary-500 hover:bg-primary-600'
+        ]"
+        :title="patterns.length === 0 ? '请先上传图案' : ''"
         @click="openCreateForm"
       >
         + 新建订单

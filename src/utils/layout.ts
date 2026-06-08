@@ -49,6 +49,7 @@ interface LayoutItem {
   orderColorTag: string | null
   orderPriority: number
   isUrgent: boolean
+  orderItemId: string | null
 }
 
 export function getCalibratedA4Dimensions(
@@ -96,7 +97,8 @@ export function buildLayoutItems(
       orderNo: null,
       orderColorTag: null,
       orderPriority: 0,
-      isUrgent: false
+      isUrgent: false,
+      orderItemId: null
     })
   }
   return items
@@ -129,7 +131,8 @@ export function buildOrderLayoutItems(
         orderNo: order.orderNo,
         orderColorTag: order.colorTag,
         orderPriority: item.priority + orderPriorityBoost,
-        isUrgent: order.isUrgent
+        isUrgent: order.isUrgent,
+        orderItemId: item.id
       })
       globalIndex++
     }
@@ -504,7 +507,7 @@ export function calculateLayout(
             const y = calibratedMargin + slot.row * cellHeight
             const transformKey = `${item.patternId}-${configIndex}`
             const transform = preservedTransforms.get(transformKey) || { ...DEFAULT_TRANSFORM }
-            const placement: PlacedPattern & { orderId?: string | null; orderNo?: string | null; orderColorTag?: string | null } = {
+            const placement: PlacedPattern & { orderId?: string | null; orderNo?: string | null; orderColorTag?: string | null; orderItemId?: string | null } = {
               patternId: item.patternId,
               x: applyCalibrationX(x, calibration),
               y: applyCalibrationY(y, calibration),
@@ -518,7 +521,8 @@ export function calculateLayout(
               configIndex,
               orderId: item.orderId,
               orderNo: item.orderNo,
-              orderColorTag: item.orderColorTag
+              orderColorTag: item.orderColorTag,
+              orderItemId: item.orderItemId
             }
             page.placements.push(placement)
             configIndex++
@@ -539,7 +543,7 @@ export function calculateLayout(
             const y = calibratedMargin + slot.row * cellHeight
             const transformKey = `${item.patternId}-${configIndex}`
             const transform = preservedTransforms.get(transformKey) || { ...DEFAULT_TRANSFORM }
-            const placement: PlacedPattern & { orderId?: string | null; orderNo?: string | null; orderColorTag?: string | null } = {
+            const placement: PlacedPattern & { orderId?: string | null; orderNo?: string | null; orderColorTag?: string | null; orderItemId?: string | null } = {
               patternId: item.patternId,
               x: applyCalibrationX(x, calibration),
               y: applyCalibrationY(y, calibration),
@@ -553,7 +557,8 @@ export function calculateLayout(
               configIndex,
               orderId: item.orderId,
               orderNo: item.orderNo,
-              orderColorTag: item.orderColorTag
+              orderColorTag: item.orderColorTag,
+              orderItemId: item.orderItemId
             }
             page.placements.push(placement)
             configIndex++
@@ -698,7 +703,8 @@ export function calculateOrderLayout(
               configIndex,
               orderId: item.orderId,
               orderNo: item.orderNo,
-              orderColorTag: item.orderColorTag
+              orderColorTag: item.orderColorTag,
+              orderItemId: item.orderItemId
             } as PlacedPatternWithOrder)
             configIndex++
             item.quantityRemaining--
@@ -732,7 +738,8 @@ export function calculateOrderLayout(
               configIndex,
               orderId: item.orderId,
               orderNo: item.orderNo,
-              orderColorTag: item.orderColorTag
+              orderColorTag: item.orderColorTag,
+              orderItemId: item.orderItemId
             } as PlacedPatternWithOrder)
             configIndex++
             item.quantityRemaining--

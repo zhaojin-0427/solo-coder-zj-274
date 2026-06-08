@@ -187,7 +187,8 @@ export async function exportToPDFWithOrderList(
         const placedByPattern = new Map<string, number>()
         for (const pl of placements) {
           if (pl.orderId === order.id) {
-            placedByPattern.set(pl.patternId, (placedByPattern.get(pl.patternId) || 0) + 1)
+            const key = pl.orderItemId || pl.patternId
+            placedByPattern.set(key, (placedByPattern.get(key) || 0) + 1)
           }
         }
 
@@ -196,7 +197,7 @@ export async function exportToPDFWithOrderList(
             pdf.addPage([pdfWidth, pdfHeight], 'portrait')
             y = 20
           }
-          const placed = placedByPattern.get(item.patternId) || 0
+          const placed = placedByPattern.get(item.id) || 0
           const complete = placed >= item.quantity
           pdf.setTextColor(complete ? 34 : 239, complete ? 197 : 68, complete ? 94 : 68)
           pdf.setFont('helvetica', 'normal')

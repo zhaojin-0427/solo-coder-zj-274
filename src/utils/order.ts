@@ -238,14 +238,14 @@ export function computeOrderLayoutProgress(
 
     const placedByItem = new Map<string, number>()
     for (const pl of orderPlacements) {
-      const key = pl.patternId
+      const key = pl.orderItemId || pl.patternId
       placedByItem.set(key, (placedByItem.get(key) || 0) + 1)
     }
 
     const missingItems: OrderPatternItem[] = []
     const atRiskItems: OrderPatternItem[] = []
     for (const item of order.items) {
-      const placed = placedByItem.get(item.patternId) || 0
+      const placed = placedByItem.get(item.id) || 0
       if (placed < item.quantity) {
         if (placed === 0 || (item.quantity - placed) >= 3) {
           missingItems.push(item)
